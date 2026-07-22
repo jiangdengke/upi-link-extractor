@@ -1,0 +1,12 @@
+services:
+  upi-link:
+    image: ${UPI_IMAGE:-ghcr.io/xiaoxin-zk/upi-link-extractor:latest}
+    container_name: upi-link-extractor
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:15336:15336"
+    environment:
+      UPI_MAX_CONCURRENCY: "1"
+    volumes:
+      - ./runtime:/app/runtime
+

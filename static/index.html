@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex,nofollow" />
+    <title>UPI 提链工具</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">LOCAL ONLY · ACCESS TOKEN NOT PERSISTED</p>
+          <h1>UPI 提链工具</h1>
+          <p class="subtitle">从已授权 ChatGPT 账号的 Access Token 创建 Stripe UPI 支付长链与二维码。</p>
+        </div>
+        <div id="health" class="health">服务检测中…</div>
+      </header>
+
+      <section class="panel">
+        <form id="job-form">
+          <label for="credential">Access Token / Session JSON</label>
+          <textarea
+            id="credential"
+            name="credential"
+            rows="5"
+            required
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            placeholder="粘贴 Access Token，或包含 accessToken 字段的 JSON"
+          ></textarea>
+          <p class="hint">凭证仅用于当前内存任务，提交成功后输入框会立即清空。Session Cookie 不受支持。</p>
+
+          <div class="grid two">
+            <div>
+              <label for="email">账号邮箱</label>
+              <input id="email" name="email" type="email" autocomplete="off" placeholder="Token 无法解析邮箱时必填" />
+            </div>
+            <div>
+              <label for="login-proxy">登录代理（可选）</label>
+              <input id="login-proxy" name="login_proxy" autocomplete="off" placeholder="http://user:pass@host:port" />
+            </div>
+          </div>
+
+          <details>
+            <summary>高级配置</summary>
+            <div class="advanced">
+              <label for="proxy-pool">India 代理池（每行一个，可选）</label>
+              <textarea id="proxy-pool" name="proxy_pool" rows="4" autocomplete="off" spellcheck="false"></textarea>
+              <div class="grid three">
+                <div>
+                  <label for="approve-retries">Approve 重试</label>
+                  <input id="approve-retries" name="approve_retries" type="number" min="1" max="60" value="30" />
+                </div>
+                <div>
+                  <label for="approve-concurrency">Approve 并发</label>
+                  <input id="approve-concurrency" name="approve_concurrency" type="number" min="1" max="20" value="1" />
+                </div>
+                <div>
+                  <label for="proxy-from-step">代理起始步骤</label>
+                  <input id="proxy-from-step" name="proxy_from_step" type="number" min="1" max="6" value="3" />
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <label class="authorization">
+            <input id="authorized" name="authorized" type="checkbox" required />
+            <span>我确认该账号属于本人，或已获得账号所有者的明确授权。</span>
+          </label>
+
+          <div class="actions">
+            <button id="submit-button" type="submit">开始提链</button>
+            <span id="form-message" class="message" role="status"></span>
+          </div>
+        </form>
+      </section>
+
+      <section class="jobs-section">
+        <div class="section-title">
+          <h2>任务</h2>
+          <button id="refresh-button" class="secondary" type="button">刷新</button>
+        </div>
+        <div id="jobs" class="jobs">
+          <div class="empty">还没有任务。</div>
+        </div>
+      </section>
+    </main>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>
+

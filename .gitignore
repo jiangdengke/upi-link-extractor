@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.agents/
+.codex/
+.venv/
+runtime/cache/
+runtime/qr/
+*.log
+.env
+credential*.txt
+token*.txt

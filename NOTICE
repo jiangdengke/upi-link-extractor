@@ -1,0 +1,10 @@
+UPI Link Extractor
+
+The UPI extraction core in upi_link/core was extracted from the local
+"any-auto-register" project at the user's request. The source project and
+this derivative are licensed under the GNU Affero General Public License,
+version 3. See LICENSE for the complete terms.
+
+New standalone adapter, API, job manager, CLI and web UI code in this
+directory are distributed under the same AGPL-3.0 license.
+
