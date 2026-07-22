@@ -307,7 +307,7 @@ async function initialize() {
   cdkInput.value = localStorage.getItem("upi_cdk") || "";
   try {
     const data = await request("/api/health", { cache: "no-store" });
-    health.textContent = `服务正常 · v${data.version} · 代理 ${data.config?.proxy_count ?? 0}`;
+    health.textContent = `服务正常 · v${data.version}`;
     health.classList.add("ok");
   } catch (error) {
     health.textContent = "服务异常";

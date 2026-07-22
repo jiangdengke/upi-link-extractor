@@ -16,10 +16,17 @@ def test_health_and_index() -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["ok"] is True
+    assert health.json()["cdk_required"] is True
+    assert "admin_enabled" not in health.json()
+    assert "config" not in health.json()
+    assert "max_concurrency" not in health.json()
 
     index = client.get("/")
     assert index.status_code == 200
     assert "UPI 提链工具" in index.text
+    assert client.get("/docs").status_code == 404
+    assert client.get("/redoc").status_code == 404
+    assert client.get("/openapi.json").status_code == 404
 
 
 def test_job_creation_requires_authorization_confirmation() -> None:
@@ -128,6 +135,45 @@ def test_batch_jobs_use_cdk_and_isolate_browser_sessions(monkeypatch, tmp_path) 
         assert all(job["status"] == "success" for job in owner_jobs)
         assert stranger.get("/api/jobs").json()["jobs"] == []
         assert store.verify(code)["used_uses"] == 2
+
+
+def test_failed_job_releases_cdk_for_reuse(monkeypatch, tmp_path) -> None:
+    store = CdkStore(tmp_path / "failed-job.db")
+    code = store.generate(count=1, max_uses=1, expires_in_days=30)[0]["code"]
+
+    async def failed_runner(credential, options, qr_path, log, should_cancel):
+        del credential, options, qr_path, log, should_cancel
+        return {"ok": False, "error": "expected failure"}
+
+    monkeypatch.setattr(main, "cdks", store)
+    monkeypatch.setattr(main, "settings", SettingsStore(tmp_path / "failed-job.db"))
+    monkeypatch.setattr(main, "jobs", JobManager(tmp_path / "failed-qr", runner=failed_runner))
+
+    with TestClient(main.app) as owner:
+        owner.get("/")
+        payload = {
+            "cdk": code,
+            "credential": "x" * 80,
+            "email": "owner@example.com",
+            "authorized": True,
+        }
+        first = owner.post("/api/jobs", json=payload)
+        assert first.status_code == 202
+
+        for _ in range(100):
+            state = owner.get(f"/api/jobs/{first.json()['id']}").json()
+            if state["status"] == "failed":
+                break
+            time.sleep(0.01)
+
+        assert state["status"] == "failed"
+        cdk = store.verify(code)
+        assert cdk["used_uses"] == 0
+        assert cdk["reserved_uses"] == 0
+        assert cdk["remaining_uses"] == 1
+
+        second = owner.post("/api/jobs", json=payload)
+        assert second.status_code == 202
 
 
 def test_public_job_api_rejects_proxy_override() -> None:

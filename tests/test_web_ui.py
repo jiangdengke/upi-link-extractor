@@ -46,6 +46,15 @@ def test_proxy_configuration_is_admin_only() -> None:
     assert "/api/admin/settings" in admin_js
 
 
+def test_user_page_contains_no_admin_entry_or_admin_copy() -> None:
+    index = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    app_js = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    assert 'href="/admin"' not in index
+    assert "管理端" not in index
+    assert "管理员" not in index
+    assert "proxy_count" not in app_js
+
+
 def test_qr_response_is_inline() -> None:
     main = (ROOT / "main.py").read_text(encoding="utf-8")
     assert "filename=path.name" not in main

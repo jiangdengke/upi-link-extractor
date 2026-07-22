@@ -48,7 +48,13 @@ def _cookie_secure() -> bool:
     return os.getenv("UPI_COOKIE_SECURE", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
-app = FastAPI(title="UPI Link Extractor", version=__version__)
+app = FastAPI(
+    title="UPI Link Extractor",
+    version=__version__,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 jobs = JobManager(RUNTIME_DIR / "qr", max_concurrency=_max_concurrency())
 DB_PATH = RUNTIME_DIR / "data" / "upi.db"
@@ -182,10 +188,7 @@ def health() -> dict:
     return {
         "ok": True,
         "version": __version__,
-        "max_concurrency": _max_concurrency(),
-        "admin_enabled": admin_auth.enabled,
         "cdk_required": True,
-        "config": settings.public_status(),
     }
 
 

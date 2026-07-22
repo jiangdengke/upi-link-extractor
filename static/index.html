@@ -15,10 +15,7 @@
           <h1>UPI 提链工具</h1>
           <p class="subtitle">从已授权 ChatGPT 账号的 Access Token 创建 Stripe UPI 支付长链与二维码。</p>
         </div>
-        <div class="hero-actions">
-          <a class="admin-link" href="/admin">管理端</a>
-          <div id="health" class="health">服务检测中…</div>
-        </div>
+        <div id="health" class="health">服务检测中…</div>
       </header>
 
       <section class="panel">
@@ -29,7 +26,7 @@
               <input id="cdk" name="cdk" required autocomplete="off" spellcheck="false" placeholder="UPI-XXXX-XXXX-XXXX" />
               <button id="check-cdk" class="secondary" type="button">检测 / 兑换</button>
             </div>
-            <p id="cdk-status" class="hint">请先输入管理员发放的 CDK。</p>
+            <p id="cdk-status" class="hint">请先输入有效的 CDK。</p>
           </div>
 
           <label for="credential">Access Token / Session JSON</label>
@@ -47,7 +44,6 @@
 
           <label for="email">账号邮箱</label>
           <input id="email" name="email" type="email" autocomplete="off" placeholder="Token 无法解析邮箱时必填" />
-          <p class="hint">代理池和提链参数由管理员统一配置，用户端无需填写。</p>
 
           <label class="authorization">
             <input id="authorized" name="authorized" type="checkbox" required />
