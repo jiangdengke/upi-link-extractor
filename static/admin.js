@@ -8,6 +8,9 @@ const cdkTable = document.querySelector("#cdk-table");
 const generatedBox = document.querySelector("#generated-box");
 const generatedCodes = document.querySelector("#generated-codes");
 const adminToast = document.querySelector("#admin-toast");
+const settingsForm = document.querySelector("#settings-form");
+const settingsMessage = document.querySelector("#settings-message");
+const settingsSummary = document.querySelector("#settings-summary");
 let toastTimer;
 
 async function request(url, options = {}) {
@@ -108,6 +111,17 @@ async function loadCdks() {
   renderCdks(data.items || []);
 }
 
+async function loadSettings() {
+  const data = await request("/api/admin/settings", { cache: "no-store" });
+  document.querySelector("#settings-proxy-pool").value = (data.proxy_pool || []).join("\n");
+  document.querySelector("#settings-login-proxy").value = data.login_proxy || "";
+  document.querySelector("#settings-retries").value = data.approve_retries;
+  document.querySelector("#settings-concurrency").value = data.approve_concurrency;
+  document.querySelector("#settings-proxy-step").value = data.proxy_from_step;
+  settingsSummary.textContent = `代理 ${data.proxy_pool.length} · 并发 ${data.approve_concurrency}`;
+  settingsSummary.classList.add("ok");
+}
+
 loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   loginMessage.textContent = "正在登录…";
@@ -120,10 +134,35 @@ loginForm.addEventListener("submit", async (event) => {
     });
     document.querySelector("#admin-password").value = "";
     setAuthenticated(true);
-    await loadCdks();
+    await Promise.all([loadCdks(), loadSettings()]);
   } catch (error) {
     loginMessage.textContent = error.message || String(error);
     loginMessage.className = "message error";
+  }
+});
+
+settingsForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  settingsMessage.textContent = "正在保存…";
+  settingsMessage.className = "message";
+  try {
+    const data = await request("/api/admin/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        proxy_pool: document.querySelector("#settings-proxy-pool").value,
+        login_proxy: document.querySelector("#settings-login-proxy").value,
+        approve_retries: Number(document.querySelector("#settings-retries").value),
+        approve_concurrency: Number(document.querySelector("#settings-concurrency").value),
+        proxy_from_step: Number(document.querySelector("#settings-proxy-step").value),
+      }),
+    });
+    settingsMessage.textContent = "全局配置已保存";
+    settingsSummary.textContent = `代理 ${data.proxy_pool.length} · 并发 ${data.approve_concurrency}`;
+    showToast("代理配置已保存");
+  } catch (error) {
+    settingsMessage.textContent = error.message || String(error);
+    settingsMessage.className = "message error";
   }
 });
 
@@ -167,7 +206,7 @@ async function initialize() {
   try {
     const session = await request("/api/admin/session", { cache: "no-store" });
     setAuthenticated(session.authenticated);
-    if (session.authenticated) await loadCdks();
+    if (session.authenticated) await Promise.all([loadCdks(), loadSettings()]);
     if (!session.configured) {
       loginMessage.textContent = "服务器尚未配置 UPI_ADMIN_PASSWORD。";
       loginMessage.className = "message error";

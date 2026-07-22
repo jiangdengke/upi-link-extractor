@@ -19,12 +19,14 @@ from upi_link.extractor import ExtractionOptions
 from upi_link.jobs import Job, JobManager
 from upi_link.schemas import (
     AdminLoginRequest,
+    AdminSettingsRequest,
     CdkRevokeRequest,
     CdkVerifyRequest,
     CreateBatchJobRequest,
     CreateCdkRequest,
     CreateJobRequest,
 )
+from upi_link.settings import SettingsStore
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -49,7 +51,9 @@ def _cookie_secure() -> bool:
 app = FastAPI(title="UPI Link Extractor", version=__version__)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 jobs = JobManager(RUNTIME_DIR / "qr", max_concurrency=_max_concurrency())
-cdks = CdkStore(RUNTIME_DIR / "data" / "upi.db")
+DB_PATH = RUNTIME_DIR / "data" / "upi.db"
+cdks = CdkStore(DB_PATH)
+settings = SettingsStore(DB_PATH)
 admin_auth = AdminAuth(
     os.getenv("UPI_ADMIN_PASSWORD", ""),
     os.getenv("UPI_SESSION_SECRET", ""),
@@ -91,24 +95,14 @@ def _require_admin(request: Request) -> None:
         raise HTTPException(401, "管理员登录已失效")
 
 
-def _parse_proxies(raw: str) -> tuple[str, ...]:
-    proxies = tuple(
-        line.strip()
-        for line in str(raw or "").replace("\r", "").split("\n")
-        if line.strip()
-    )
-    if len(proxies) > 100:
-        raise HTTPException(400, "代理数量不能超过 100")
-    return proxies
-
-
-def _options(body: CreateJobRequest | CreateBatchJobRequest) -> ExtractionOptions:
+def _options() -> ExtractionOptions:
+    config = settings.get()
     return ExtractionOptions(
-        proxy_pool=_parse_proxies(body.proxy_pool),
-        login_proxy=body.login_proxy.strip() or None,
-        approve_retries=body.approve_retries,
-        approve_concurrency=body.approve_concurrency,
-        proxy_from_step=body.proxy_from_step,
+        proxy_pool=tuple(config["proxy_pool"]),
+        login_proxy=config["login_proxy"] or None,
+        approve_retries=config["approve_retries"],
+        approve_concurrency=config["approve_concurrency"],
+        proxy_from_step=config["proxy_from_step"],
     )
 
 
@@ -191,6 +185,7 @@ def health() -> dict:
         "max_concurrency": _max_concurrency(),
         "admin_enabled": admin_auth.enabled,
         "cdk_required": True,
+        "config": settings.public_status(),
     }
 
 
@@ -229,7 +224,7 @@ async def create_job(
     return _launch_jobs(
         [credential],
         cdk=body.cdk,
-        options=_options(body),
+        options=_options(),
         owner_id=owner_id,
     )[0]
 
@@ -257,7 +252,7 @@ async def create_batch_jobs(
     snapshots = _launch_jobs(
         credentials,
         cdk=body.cdk,
-        options=_options(body),
+        options=_options(),
         owner_id=owner_id,
     )
     return {
@@ -325,6 +320,27 @@ def admin_login(body: AdminLoginRequest, request: Request, response: Response) -
 def admin_logout(response: Response) -> dict:
     response.delete_cookie(ADMIN_COOKIE, path="/")
     return {"ok": True}
+
+
+@app.get("/api/admin/settings")
+def admin_get_settings(request: Request) -> dict:
+    _require_admin(request)
+    return settings.get()
+
+
+@app.put("/api/admin/settings")
+def admin_update_settings(body: AdminSettingsRequest, request: Request) -> dict:
+    _require_admin(request)
+    try:
+        return settings.update(
+            proxy_pool=body.proxy_pool,
+            login_proxy=body.login_proxy,
+            approve_retries=body.approve_retries,
+            approve_concurrency=body.approve_concurrency,
+            proxy_from_step=body.proxy_from_step,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/api/admin/cdks")

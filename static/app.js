@@ -274,11 +274,6 @@ form.addEventListener("submit", async (event) => {
     cdk: normalizeCdk(data.get("cdk")),
     credential: data.get("credential"),
     email: data.get("email"),
-    proxy_pool: data.get("proxy_pool"),
-    login_proxy: data.get("login_proxy"),
-    approve_retries: Number(data.get("approve_retries")),
-    approve_concurrency: Number(data.get("approve_concurrency")),
-    proxy_from_step: Number(data.get("proxy_from_step")),
     authorized: data.get("authorized") === "on",
   };
   try {
@@ -312,7 +307,7 @@ async function initialize() {
   cdkInput.value = localStorage.getItem("upi_cdk") || "";
   try {
     const data = await request("/api/health", { cache: "no-store" });
-    health.textContent = `服务正常 · v${data.version} · 并发 ${data.max_concurrency}`;
+    health.textContent = `服务正常 · v${data.version} · 代理 ${data.config?.proxy_count ?? 0}`;
     health.classList.add("ok");
   } catch (error) {
     health.textContent = "服务异常";

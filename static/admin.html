@@ -35,6 +35,44 @@
         </nav>
       </header>
 
+      <section class="panel settings-panel">
+        <div class="section-title">
+          <div>
+            <h2>全局提链配置</h2>
+            <p class="hint">代理凭证仅管理员可见，所有用户任务统一使用这里保存的配置。</p>
+          </div>
+          <span id="settings-summary" class="health">加载中…</span>
+        </div>
+        <form id="settings-form">
+          <label for="settings-proxy-pool">India 代理池（每行一个）</label>
+          <textarea id="settings-proxy-pool" rows="6" autocomplete="off" spellcheck="false" placeholder="http://user:pass@host:port"></textarea>
+          <div class="grid two">
+            <div>
+              <label for="settings-login-proxy">登录 / Checkout 代理（可选）</label>
+              <input id="settings-login-proxy" autocomplete="off" placeholder="http://user:pass@host:port" />
+            </div>
+            <div>
+              <label for="settings-proxy-step">代理起始步骤</label>
+              <input id="settings-proxy-step" type="number" min="1" max="6" value="3" />
+            </div>
+          </div>
+          <div class="grid two">
+            <div>
+              <label for="settings-retries">Approve 重试次数</label>
+              <input id="settings-retries" type="number" min="1" max="60" value="30" />
+            </div>
+            <div>
+              <label for="settings-concurrency">Approve 并发</label>
+              <input id="settings-concurrency" type="number" min="1" max="20" value="1" />
+            </div>
+          </div>
+          <div class="actions">
+            <button type="submit">保存全局配置</button>
+            <span id="settings-message" class="message" role="status"></span>
+          </div>
+        </form>
+      </section>
+
       <div class="admin-grid">
         <section class="panel">
           <h2>生成兑换码</h2>

@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 
 class CreateJobRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     cdk: str = Field(min_length=1, max_length=64)
     credential: SecretStr
     email: str = Field(default="", max_length=320)
-    proxy_pool: str = Field(default="", max_length=20000)
-    login_proxy: str = Field(default="", max_length=2048)
-    approve_retries: int = Field(default=30, ge=1, le=60)
-    approve_concurrency: int = Field(default=1, ge=1, le=20)
-    proxy_from_step: int = Field(default=3, ge=1, le=6)
     authorized: bool = False
 
 
@@ -21,13 +18,10 @@ class BatchCredentialItem(BaseModel):
 
 
 class CreateBatchJobRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     cdk: str = Field(min_length=1, max_length=64)
     items: list[BatchCredentialItem] = Field(min_length=1, max_length=10)
-    proxy_pool: str = Field(default="", max_length=20000)
-    login_proxy: str = Field(default="", max_length=2048)
-    approve_retries: int = Field(default=30, ge=1, le=60)
-    approve_concurrency: int = Field(default=1, ge=1, le=20)
-    proxy_from_step: int = Field(default=3, ge=1, le=6)
     authorized: bool = False
 
 
@@ -49,3 +43,11 @@ class CreateCdkRequest(BaseModel):
 
 class CdkRevokeRequest(BaseModel):
     revoked: bool = True
+
+
+class AdminSettingsRequest(BaseModel):
+    proxy_pool: str = Field(default="", max_length=20000)
+    login_proxy: str = Field(default="", max_length=2048)
+    approve_retries: int = Field(default=30, ge=1, le=60)
+    approve_concurrency: int = Field(default=1, ge=1, le=20)
+    proxy_from_step: int = Field(default=3, ge=1, le=6)

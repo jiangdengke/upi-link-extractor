@@ -45,38 +45,9 @@
           ></textarea>
           <p class="hint">凭证仅用于当前内存任务，提交成功后输入框会立即清空。Session Cookie 不受支持。</p>
 
-          <div class="grid two">
-            <div>
-              <label for="email">账号邮箱</label>
-              <input id="email" name="email" type="email" autocomplete="off" placeholder="Token 无法解析邮箱时必填" />
-            </div>
-            <div>
-              <label for="login-proxy">登录代理（可选）</label>
-              <input id="login-proxy" name="login_proxy" autocomplete="off" placeholder="http://user:pass@host:port" />
-            </div>
-          </div>
-
-          <details>
-            <summary>高级配置</summary>
-            <div class="advanced">
-              <label for="proxy-pool">India 代理池（每行一个，可选）</label>
-              <textarea id="proxy-pool" name="proxy_pool" rows="4" autocomplete="off" spellcheck="false"></textarea>
-              <div class="grid three">
-                <div>
-                  <label for="approve-retries">Approve 重试</label>
-                  <input id="approve-retries" name="approve_retries" type="number" min="1" max="60" value="30" />
-                </div>
-                <div>
-                  <label for="approve-concurrency">Approve 并发</label>
-                  <input id="approve-concurrency" name="approve_concurrency" type="number" min="1" max="20" value="1" />
-                </div>
-                <div>
-                  <label for="proxy-from-step">代理起始步骤</label>
-                  <input id="proxy-from-step" name="proxy_from_step" type="number" min="1" max="6" value="3" />
-                </div>
-              </div>
-            </div>
-          </details>
+          <label for="email">账号邮箱</label>
+          <input id="email" name="email" type="email" autocomplete="off" placeholder="Token 无法解析邮箱时必填" />
+          <p class="hint">代理池和提链参数由管理员统一配置，用户端无需填写。</p>
 
           <label class="authorization">
             <input id="authorized" name="authorized" type="checkbox" required />

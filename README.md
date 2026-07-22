@@ -12,6 +12,7 @@
 - Web 页面与命令行两种入口
 - Token 不写数据库、不进入任务响应、不保存到浏览器存储
 - 管理员密码登录和 CDK 兑换码管理
+- 管理员统一配置代理池、登录代理、重试、并发和代理步骤
 - CDK 次数、有效期、停用、成功扣次与失败释放
 - 浏览器任务隔离，用户之间不会看到对方的任务、日志和支付链接
 - 批量 API 一次最多提交 10 个 Access Token / Session JSON
@@ -39,6 +40,8 @@ Windows 也可以在依赖安装完成后双击 `start.bat`。
 浏览器打开：<http://127.0.0.1:15336>
 
 管理员页面：<http://127.0.0.1:15336/admin>
+
+代理池和提链运行参数只在管理端配置。用户页面和公开任务 API 无法读取或覆盖代理凭证。
 
 运行时文件位于：
 
@@ -128,10 +131,6 @@ python -m upi_link.cli --credential-file "credential.json" --proxy-file "proxies
       "credential": "{\"accessToken\":\"ACCESS_TOKEN_2\",\"user\":{\"email\":\"account2@example.com\"}}"
     }
   ],
-  "proxy_pool": "http://user:pass@host:port",
-  "approve_retries": 30,
-  "approve_concurrency": 2,
-  "proxy_from_step": 3,
   "authorized": true
 }
 ```
@@ -147,6 +146,7 @@ curl -X POST http://127.0.0.1:15336/api/jobs/batch \
 ```
 
 批量 API 使用浏览器会话 Cookie 隔离任务。后续查询 `/api/jobs` 时需要继续携带同一个 Cookie 文件。
+批量任务和单任务都会自动使用管理员端保存的全局代理配置。
 
 任务信息仅保存在内存中。服务重启后任务列表会清空，已生成的二维码文件仍保留。
 

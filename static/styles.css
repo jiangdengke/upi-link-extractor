@@ -162,6 +162,7 @@ body.modal-open { overflow: hidden; }
 .admin-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 26px; }
 .admin-header nav { display: flex; align-items: center; gap: 10px; }
 .admin-grid { display: grid; grid-template-columns: minmax(280px, 390px) 1fr; gap: 18px; align-items: start; }
+.settings-panel { margin-bottom: 18px; }
 .generated-box { margin-top: 18px; }
 .generated-box textarea { min-height: 150px; }
 .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 14px; }

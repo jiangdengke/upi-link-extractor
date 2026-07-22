@@ -34,6 +34,18 @@ def test_cdk_user_and_admin_interfaces_exist() -> None:
     assert "/api/admin/cdks" in admin_js
 
 
+def test_proxy_configuration_is_admin_only() -> None:
+    index = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    app_js = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    admin = (ROOT / "static" / "admin.html").read_text(encoding="utf-8")
+    admin_js = (ROOT / "static" / "admin.js").read_text(encoding="utf-8")
+    assert 'id="proxy-pool"' not in index
+    assert 'id="login-proxy"' not in index
+    assert "proxy_pool: data.get" not in app_js
+    assert 'id="settings-proxy-pool"' in admin
+    assert "/api/admin/settings" in admin_js
+
+
 def test_qr_response_is_inline() -> None:
     main = (ROOT / "main.py").read_text(encoding="utf-8")
     assert "filename=path.name" not in main

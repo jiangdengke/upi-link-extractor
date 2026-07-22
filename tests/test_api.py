@@ -6,6 +6,7 @@ import main
 from upi_link.auth import AdminAuth, LoginRateLimiter
 from upi_link.cdk import CdkStore
 from upi_link.jobs import JobManager
+from upi_link.settings import SettingsStore
 
 
 client = TestClient(main.app)
@@ -38,6 +39,7 @@ def test_job_creation_requires_authorization_confirmation() -> None:
 def test_admin_login_and_cdk_generation(monkeypatch, tmp_path) -> None:
     store = CdkStore(tmp_path / "admin.db")
     monkeypatch.setattr(main, "cdks", store)
+    monkeypatch.setattr(main, "settings", SettingsStore(tmp_path / "admin.db"))
     monkeypatch.setattr(main, "admin_auth", AdminAuth("correct-password", "test-secret"))
     monkeypatch.setattr(main, "login_limiter", LoginRateLimiter())
 
@@ -65,6 +67,20 @@ def test_admin_login_and_cdk_generation(monkeypatch, tmp_path) -> None:
         assert "note" not in verified.json()
         assert "created_at" not in verified.json()
 
+        saved = admin.put(
+            "/api/admin/settings",
+            json={
+                "proxy_pool": "http://user:pass@proxy.example:2000\nhttp://user2:pass@proxy.example:2000",
+                "login_proxy": "http://login:pass@login.example:2000",
+                "approve_retries": 40,
+                "approve_concurrency": 5,
+                "proxy_from_step": 3,
+            },
+        )
+        assert saved.status_code == 200
+        assert len(saved.json()["proxy_pool"]) == 2
+        assert admin.get("/api/admin/settings").json()["approve_concurrency"] == 5
+
 
 def test_batch_jobs_use_cdk_and_isolate_browser_sessions(monkeypatch, tmp_path) -> None:
     store = CdkStore(tmp_path / "batch.db")
@@ -81,6 +97,7 @@ def test_batch_jobs_use_cdk_and_isolate_browser_sessions(monkeypatch, tmp_path) 
         }
 
     monkeypatch.setattr(main, "cdks", store)
+    monkeypatch.setattr(main, "settings", SettingsStore(tmp_path / "batch.db"))
     monkeypatch.setattr(main, "jobs", JobManager(tmp_path / "qr", max_concurrency=2, runner=fake_runner))
 
     with TestClient(main.app) as owner, TestClient(main.app) as stranger:
@@ -111,3 +128,17 @@ def test_batch_jobs_use_cdk_and_isolate_browser_sessions(monkeypatch, tmp_path) 
         assert all(job["status"] == "success" for job in owner_jobs)
         assert stranger.get("/api/jobs").json()["jobs"] == []
         assert store.verify(code)["used_uses"] == 2
+
+
+def test_public_job_api_rejects_proxy_override() -> None:
+    response = client.post(
+        "/api/jobs",
+        json={
+            "cdk": "UPI-TEST-TEST-TEST",
+            "credential": "x" * 80,
+            "email": "owner@example.com",
+            "proxy_pool": "http://should-not-be-accepted:2000",
+            "authorized": False,
+        },
+    )
+    assert response.status_code == 422
