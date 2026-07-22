@@ -46,7 +46,7 @@ Windows 也可以在依赖安装完成后双击 `start.bat`。
 ```powershell
 docker run -d --name upi-link-extractor --restart unless-stopped `
   -p 127.0.0.1:15336:15336 `
-  -v "${PWD}/runtime:/app/runtime" `
+  -v "upi-link-runtime:/app/runtime" `
   ghcr.io/xiaoxin-zk/upi-link-extractor:latest
 ```
 
@@ -63,7 +63,7 @@ docker build -t upi-link-extractor:local .
 docker run -d --name upi-link-extractor -p 127.0.0.1:15336:15336 upi-link-extractor:local
 ```
 
-容器默认以非 root 用户运行，并提供 `/api/health` 健康检查。公网部署前必须增加 HTTPS 和访问认证。
+容器默认以非 root 用户运行，并提供 `/api/health` 健康检查。部署示例使用 Docker 命名卷，避免宿主机 bind mount 的 UID/GID 权限差异。公网部署前必须增加 HTTPS 和访问认证。
 
 ## 命令行
 

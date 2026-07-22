@@ -8,5 +8,8 @@ services:
     environment:
       UPI_MAX_CONCURRENCY: "1"
     volumes:
-      - ./runtime:/app/runtime
+      - upi-link-runtime:/app/runtime
+
+volumes:
+  upi-link-runtime:
 

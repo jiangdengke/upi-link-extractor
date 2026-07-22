@@ -51,3 +51,29 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Smoke test published image
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:sha-${GITHUB_SHA::7}"
+          container="upi-link-smoke"
+          volume="upi-link-smoke-${GITHUB_RUN_ID}"
+          cleanup() {
+            docker rm -f "$container" >/dev/null 2>&1 || true
+            docker volume rm "$volume" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker volume create "$volume" >/dev/null
+          docker run -d --name "$container" -p 127.0.0.1:15336:15336 \
+            -v "$volume:/app/runtime" "$image" >/dev/null
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:15336/api/health >/dev/null; then
+              exit 0
+            fi
+            if [ "$(docker inspect --format '{{.State.Running}}' "$container")" != "true" ]; then
+              break
+            fi
+            sleep 2
+          done
+          docker logs "$container"
+          exit 1
