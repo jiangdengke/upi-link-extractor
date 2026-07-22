@@ -4,12 +4,14 @@ services:
     container_name: upi-link-extractor
     restart: unless-stopped
     ports:
-      - "127.0.0.1:15336:15336"
+      - "${UPI_BIND_HOST:-0.0.0.0}:15336:15336"
     environment:
       UPI_MAX_CONCURRENCY: "1"
+      UPI_ADMIN_PASSWORD: "${UPI_ADMIN_PASSWORD:?请在 .env 中设置 UPI_ADMIN_PASSWORD}"
+      UPI_SESSION_SECRET: "${UPI_SESSION_SECRET:?请在 .env 中设置 UPI_SESSION_SECRET}"
+      UPI_COOKIE_SECURE: "${UPI_COOKIE_SECURE:-0}"
     volumes:
       - upi-link-runtime:/app/runtime
 
 volumes:
   upi-link-runtime:
-

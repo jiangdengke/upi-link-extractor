@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex,nofollow" />
+    <title>UPI CDK 管理</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <section id="login-view" class="panel login-panel">
+      <p class="eyebrow">ADMIN</p>
+      <h1>CDK 管理登录</h1>
+      <p class="subtitle">使用服务器环境变量配置的管理员密码登录。</p>
+      <form id="login-form">
+        <label for="admin-password">管理员密码</label>
+        <input id="admin-password" type="password" required autocomplete="current-password" />
+        <div class="actions">
+          <button type="submit">登录</button>
+          <a class="admin-link" href="/">返回用户端</a>
+        </div>
+        <p id="login-message" class="message" role="status"></p>
+      </form>
+    </section>
+
+    <main id="admin-view" class="admin-shell" hidden>
+      <header class="admin-header">
+        <div>
+          <p class="eyebrow">UPI LINK ADMIN</p>
+          <h1>CDK 管理</h1>
+        </div>
+        <nav>
+          <a class="admin-link" href="/">用户前端</a>
+          <button id="logout-button" class="secondary" type="button">退出登录</button>
+        </nav>
+      </header>
+
+      <div class="admin-grid">
+        <section class="panel">
+          <h2>生成兑换码</h2>
+          <form id="generate-form">
+            <div class="grid two">
+              <div>
+                <label for="cdk-count">生成数量</label>
+                <input id="cdk-count" type="number" min="1" max="100" value="1" />
+              </div>
+              <div>
+                <label for="cdk-uses">每码次数</label>
+                <input id="cdk-uses" type="number" min="1" max="10000" value="1" />
+              </div>
+            </div>
+            <div class="grid two">
+              <div>
+                <label for="cdk-days">有效天数</label>
+                <input id="cdk-days" type="number" min="0" max="3650" value="30" />
+                <p class="hint">填 0 表示永不过期。</p>
+              </div>
+              <div>
+                <label for="cdk-prefix">前缀</label>
+                <input id="cdk-prefix" value="UPI" maxlength="12" />
+              </div>
+            </div>
+            <label for="cdk-note">备注</label>
+            <input id="cdk-note" maxlength="500" placeholder="渠道、客户或批次说明" />
+            <div class="actions">
+              <button type="submit">生成 CDK</button>
+              <span id="generate-message" class="message" role="status"></span>
+            </div>
+          </form>
+
+          <div id="generated-box" class="generated-box" hidden>
+            <label for="generated-codes">本次生成结果</label>
+            <textarea id="generated-codes" readonly></textarea>
+            <button id="copy-generated" class="secondary" type="button">复制全部</button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-title">
+            <h2>兑换码列表</h2>
+            <button id="refresh-cdks" class="secondary" type="button">刷新</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>CDK</th>
+                  <th>次数</th>
+                  <th>状态</th>
+                  <th>过期时间</th>
+                  <th>备注</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="cdk-table"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </main>
+    <div id="admin-toast" class="action-toast" hidden role="status"></div>
+    <script src="/static/admin.js" defer></script>
+  </body>
+</html>

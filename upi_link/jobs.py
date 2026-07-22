@@ -25,6 +25,7 @@ def _now() -> str:
 class Job:
     id: str
     email: str
+    owner_id: str = field(default="", repr=False)
     status: str = "queued"
     created_at: str = field(default_factory=_now)
     started_at: str | None = None
@@ -32,6 +33,8 @@ class Job:
     logs: list[str] = field(default_factory=list)
     result: dict | None = None
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    on_complete: Callable[["Job"], None] | None = field(default=None, repr=False)
+    completion_notified: bool = field(default=False, repr=False)
 
     def snapshot(self) -> dict:
         result = dict(self.result or {})
@@ -65,24 +68,45 @@ class JobManager:
         self._semaphore = asyncio.Semaphore(max(1, max_concurrency))
         self._runner = runner
 
-    def create(self, credential: Credential, options: ExtractionOptions) -> dict:
+    def create(
+        self,
+        credential: Credential,
+        options: ExtractionOptions,
+        *,
+        owner_id: str = "",
+        job_id: str | None = None,
+        on_complete: Callable[[Job], None] | None = None,
+    ) -> dict:
         self._trim_completed()
-        job = Job(id=uuid4().hex, email=credential.email)
+        job = Job(
+            id=job_id or uuid4().hex,
+            email=credential.email,
+            owner_id=owner_id,
+            on_complete=on_complete,
+        )
         self._jobs[job.id] = job
         task = asyncio.create_task(self._run(job, credential, options))
         self._tasks[job.id] = task
         task.add_done_callback(lambda _task, job_id=job.id: self._tasks.pop(job_id, None))
         return job.snapshot()
 
-    def get(self, job_id: str) -> Job | None:
-        return self._jobs.get(job_id)
+    def get(self, job_id: str, *, owner_id: str | None = None) -> Job | None:
+        job = self._jobs.get(job_id)
+        if job is None or (owner_id is not None and job.owner_id != owner_id):
+            return None
+        return job
 
-    def list(self) -> list[dict]:
-        jobs = sorted(self._jobs.values(), key=lambda item: item.created_at, reverse=True)
+    def list(self, *, owner_id: str | None = None) -> list[dict]:
+        visible = (
+            self._jobs.values()
+            if owner_id is None
+            else (job for job in self._jobs.values() if job.owner_id == owner_id)
+        )
+        jobs = sorted(visible, key=lambda item: item.created_at, reverse=True)
         return [job.snapshot() for job in jobs]
 
-    def cancel(self, job_id: str) -> dict | None:
-        job = self._jobs.get(job_id)
+    def cancel(self, job_id: str, *, owner_id: str | None = None) -> dict | None:
+        job = self.get(job_id, owner_id=owner_id)
         if job is None:
             return None
         job.cancel_event.set()
@@ -93,10 +117,11 @@ class JobManager:
             job.status = "cancelled"
             job.finished_at = _now()
             job.logs.append("任务已在队列中取消")
+            self._notify_completion(job)
         return job.snapshot()
 
-    def qr_path(self, job_id: str) -> Path | None:
-        job = self._jobs.get(job_id)
+    def qr_path(self, job_id: str, *, owner_id: str | None = None) -> Path | None:
+        job = self.get(job_id, owner_id=owner_id)
         raw = str((job.result or {}).get("qr_path") or "") if job else ""
         if not raw:
             return None
@@ -131,6 +156,8 @@ class JobManager:
                     log,
                     job.cancel_event.is_set,
                 )
+                if result.get("payment_link") and not result.get("generated_at"):
+                    result["generated_at"] = _now()
                 job.result = result
                 if job.cancel_event.is_set():
                     job.status = "cancelled"
@@ -144,6 +171,17 @@ class JobManager:
         finally:
             if job.status in {"success", "failed", "cancelled"}:
                 job.finished_at = _now()
+                self._notify_completion(job)
+
+    @staticmethod
+    def _notify_completion(job: Job) -> None:
+        if job.completion_notified or job.on_complete is None:
+            return
+        job.completion_notified = True
+        try:
+            job.on_complete(job)
+        except Exception as exc:  # noqa: BLE001 - accounting callback boundary
+            job.logs.append(f"[CDK] 结算失败: {type(exc).__name__}: {exc}")
 
     def _trim_completed(self, keep: int = 100) -> None:
         completed = [
@@ -152,4 +190,3 @@ class JobManager:
         completed.sort(key=lambda item: item.finished_at or item.created_at, reverse=True)
         for job in completed[keep:]:
             self._jobs.pop(job.id, None)
-

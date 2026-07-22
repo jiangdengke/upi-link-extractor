@@ -11,6 +11,10 @@
 - 可选登录代理、India 代理池和 Approve 参数
 - Web 页面与命令行两种入口
 - Token 不写数据库、不进入任务响应、不保存到浏览器存储
+- 管理员密码登录和 CDK 兑换码管理
+- CDK 次数、有效期、停用、成功扣次与失败释放
+- 浏览器任务隔离，用户之间不会看到对方的任务、日志和支付链接
+- 批量 API 一次最多提交 10 个 Access Token / Session JSON
 
 ## 安全边界
 
@@ -34,6 +38,8 @@ Windows 也可以在依赖安装完成后双击 `start.bat`。
 
 浏览器打开：<http://127.0.0.1:15336>
 
+管理员页面：<http://127.0.0.1:15336/admin>
+
 运行时文件位于：
 
 - `runtime/qr/`：生成的二维码
@@ -41,12 +47,27 @@ Windows 也可以在依赖安装完成后双击 `start.bat`。
 
 ## Docker
 
+首次部署先创建 `.env`：
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+其中 `UPI_ADMIN_PASSWORD` 填写你自己的强密码；`UPI_SESSION_SECRET` 可以通过
+`openssl rand -hex 32` 生成。两项为空时 Compose 会拒绝启动。
+
+如果通过 HTTPS 域名访问，把 `.env` 中的 `UPI_COOKIE_SECURE` 改为 `1`。
+如果只允许服务器本机或反向代理访问，把 `UPI_BIND_HOST` 改为 `127.0.0.1`。
+
 使用预构建的 GHCR 镜像：
 
 ```powershell
 docker run -d --name upi-link-extractor --restart unless-stopped `
-  -p 127.0.0.1:15336:15336 `
+  -p 0.0.0.0:15336:15336 `
   -v "upi-link-runtime:/app/runtime" `
+  -e UPI_ADMIN_PASSWORD="你的强管理员密码" `
+  -e UPI_SESSION_SECRET="独立随机密钥" `
   ghcr.io/xiaoxin-zk/upi-link-extractor:latest
 ```
 
@@ -83,10 +104,49 @@ python -m upi_link.cli --credential-file "credential.json" --proxy-file "proxies
 ## API
 
 - `POST /api/jobs`：创建提链任务
+- `POST /api/jobs/batch`：批量创建任务，最多 10 项
 - `GET /api/jobs`：列出本次服务进程中的任务
 - `GET /api/jobs/{id}`：查询状态
 - `POST /api/jobs/{id}/cancel`：取消任务
 - `GET /api/jobs/{id}/qr`：读取二维码
+- `POST /api/cdk/verify`：检查 CDK 次数和有效期
+- `POST /api/admin/login`：管理员登录
+- `POST /api/admin/cdks`：生成 CDK
+- `GET /api/admin/cdks`：列出 CDK
+
+批量任务请求示例。建议把内容保存为仅当前用户可读的 JSON 文件，避免 Token 进入 Shell 历史：
+
+```json
+{
+  "cdk": "UPI-XXXX-XXXX-XXXX",
+  "items": [
+    {
+      "credential": "ACCESS_TOKEN_1",
+      "email": "account1@example.com"
+    },
+    {
+      "credential": "{\"accessToken\":\"ACCESS_TOKEN_2\",\"user\":{\"email\":\"account2@example.com\"}}"
+    }
+  ],
+  "proxy_pool": "http://user:pass@host:port",
+  "approve_retries": 30,
+  "approve_concurrency": 2,
+  "proxy_from_step": 3,
+  "authorized": true
+}
+```
+
+提交：
+
+```bash
+chmod 600 batch-request.json
+curl -X POST http://127.0.0.1:15336/api/jobs/batch \
+  -H 'Content-Type: application/json' \
+  -c upi-cookie.txt -b upi-cookie.txt \
+  --data-binary @batch-request.json
+```
+
+批量 API 使用浏览器会话 Cookie 隔离任务。后续查询 `/api/jobs` 时需要继续携带同一个 Cookie 文件。
 
 任务信息仅保存在内存中。服务重启后任务列表会清空，已生成的二维码文件仍保留。
 

@@ -15,11 +15,23 @@
           <h1>UPI 提链工具</h1>
           <p class="subtitle">从已授权 ChatGPT 账号的 Access Token 创建 Stripe UPI 支付长链与二维码。</p>
         </div>
-        <div id="health" class="health">服务检测中…</div>
+        <div class="hero-actions">
+          <a class="admin-link" href="/admin">管理端</a>
+          <div id="health" class="health">服务检测中…</div>
+        </div>
       </header>
 
       <section class="panel">
         <form id="job-form">
+          <div class="cdk-panel">
+            <label for="cdk">CDK 兑换码</label>
+            <div class="cdk-row">
+              <input id="cdk" name="cdk" required autocomplete="off" spellcheck="false" placeholder="UPI-XXXX-XXXX-XXXX" />
+              <button id="check-cdk" class="secondary" type="button">检测 / 兑换</button>
+            </div>
+            <p id="cdk-status" class="hint">请先输入管理员发放的 CDK。</p>
+          </div>
+
           <label for="credential">Access Token / Session JSON</label>
           <textarea
             id="credential"
@@ -88,7 +100,26 @@
         </div>
       </section>
     </main>
+
+    <div id="qr-modal" class="modal" hidden aria-hidden="true">
+      <div class="modal-backdrop" data-modal-close></div>
+      <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="qr-modal-title">
+        <header class="modal-head">
+          <div>
+            <h2 id="qr-modal-title">UPI 支付二维码</h2>
+            <p id="qr-modal-email" class="job-meta"></p>
+          </div>
+          <button id="qr-modal-close" class="icon-button" type="button" aria-label="关闭二维码">×</button>
+        </header>
+        <img id="qr-modal-image" class="qr-large" alt="UPI 支付二维码" />
+        <div class="modal-actions">
+          <a id="qr-open-new" class="button-link" target="_blank" rel="noopener noreferrer">新窗口打开二维码</a>
+          <button id="qr-modal-done" class="secondary" type="button">关闭</button>
+        </div>
+      </section>
+    </div>
+
+    <div id="action-toast" class="action-toast" hidden role="status"></div>
     <script src="/static/app.js" defer></script>
   </body>
 </html>
-

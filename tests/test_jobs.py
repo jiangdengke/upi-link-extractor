@@ -31,8 +31,35 @@ def test_job_manager_runs_without_retaining_secret(tmp_path: Path) -> None:
     assert snapshot["status"] == "success"
     assert secret not in json_like(snapshot)
     assert snapshot["result"]["qr_url"].endswith("/qr")
+    assert snapshot["result"]["generated_at"]
 
 
 def json_like(value) -> str:
     return repr(value)
 
+
+def test_job_manager_isolates_owners_and_calls_completion_once(tmp_path: Path) -> None:
+    completed: list[str] = []
+
+    async def fake_runner(credential, options, qr_path, log, should_cancel):
+        del credential, options, qr_path, log, should_cancel
+        return {"ok": False, "error": "expected"}
+
+    async def scenario() -> None:
+        manager = JobManager(tmp_path, runner=fake_runner)
+        created = manager.create(
+            Credential("z" * 80, "owner@example.com"),
+            ExtractionOptions(),
+            owner_id="owner-a",
+            on_complete=lambda job: completed.append(job.id),
+        )
+        assert manager.get(created["id"], owner_id="owner-b") is None
+        assert manager.list(owner_id="owner-b") == []
+        for _ in range(100):
+            job = manager.get(created["id"], owner_id="owner-a")
+            if job and job.status == "failed":
+                break
+            await asyncio.sleep(0.01)
+
+    asyncio.run(scenario())
+    assert len(completed) == 1

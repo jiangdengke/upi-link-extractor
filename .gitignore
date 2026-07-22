@@ -4,8 +4,7 @@ __pycache__/
 .agents/
 .codex/
 .venv/
-runtime/cache/
-runtime/qr/
+runtime/
 *.log
 .env
 credential*.txt
