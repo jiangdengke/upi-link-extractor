@@ -11,7 +11,7 @@
     <main class="shell">
       <header class="hero">
         <div>
-          <p class="eyebrow">LOCAL ONLY · ACCESS TOKEN NOT PERSISTED</p>
+          <p class="eyebrow">ACCESS TOKEN NOT PERSISTED</p>
           <h1>UPI 提链工具</h1>
           <p class="subtitle">从已授权 ChatGPT 账号的 Access Token 创建 Stripe UPI 支付长链与二维码。</p>
         </div>
@@ -40,14 +40,14 @@
             spellcheck="false"
             placeholder="粘贴 Access Token，或包含 accessToken 字段的 JSON"
           ></textarea>
-          <p class="hint">凭证仅用于当前内存任务，提交成功后输入框会立即清空。Session Cookie 不受支持。</p>
+          <p class="hint">凭证不会持久化；支付型 CDK 会将 Access Token 与支付长链提交至支付服务用于验单。Session Cookie 不受支持。</p>
 
           <label for="email">账号邮箱</label>
           <input id="email" name="email" type="email" autocomplete="off" placeholder="Token 无法解析邮箱时必填" />
 
           <label class="authorization">
             <input id="authorized" name="authorized" type="checkbox" required />
-            <span>我确认该账号属于本人，或已获得账号所有者的明确授权。</span>
+            <span>我确认该账号属于本人或已获明确授权，并同意支付型任务将凭证提交至支付服务用于验单。</span>
           </label>
 
           <div class="actions">

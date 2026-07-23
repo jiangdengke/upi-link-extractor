@@ -14,6 +14,8 @@
 - 管理员密码登录和 CDK 兑换码管理
 - 管理员统一配置代理池、登录代理、重试、并发和代理步骤
 - CDK 次数、有效期、停用、成功扣次与失败释放
+- “仅提链”和“提链 + Foarge 支付”两种 CDK
+- 支付型任务自动等待上游、提交长链、同步支付进度并按需刷新过期长链
 - 浏览器任务隔离，用户之间不会看到对方的任务、日志和支付链接
 - 批量 API 一次最多提交 10 个 Access Token / Session JSON
 
@@ -24,6 +26,9 @@
 - 默认仅监听 `127.0.0.1`。不要直接暴露到公网，因为接口接收高敏感凭证。
 - 运行依赖 ChatGPT/Stripe 的非公开页面接口，第三方改版后可能失效。
 - 代理不是必需项；请只使用你有权使用的代理服务。
+- Access Token 不会持久化。使用支付型 CDK 时，服务会按 Foarge Publisher API
+  的要求把 Access Token 与 UPI 长链发送至 `https://foarge.com/api/publisher/v1`
+  用于支付和 Plus 验单。
 
 ## 安装与启动
 
@@ -42,6 +47,17 @@ Windows 也可以在依赖安装完成后双击 `start.bat`。
 管理员页面：<http://127.0.0.1:15336/admin>
 
 代理池和提链运行参数只在管理端配置。用户页面和公开任务 API 无法读取或覆盖代理凭证。
+
+### Foarge 支付型 CDK
+
+管理员可在管理页面的“Foarge 支付配置”中保存 `PBK-...` CDK，并检查剩余次数。
+随后生成 CDK 时选择“提链 + Foarge 支付”。Foarge PBK 只保存在 SQLite 数据卷中，
+管理 API 仅返回脱敏状态，用户 API 不返回该密钥。
+
+支付任务遵循 Foarge 官方时序：先创建并等待 `awaiting_checkout`，再生成 UPI
+长链并立即提交。用户页面持续显示上游支付状态；上游要求刷新时会自动重新提链，
+不会重复扣本地 CDK 或 Foarge PBK。首次长链生成成功即消耗一次本地 CDK；提链前
+失败或取消则释放本地次数。
 
 运行时文件位于：
 
@@ -116,6 +132,9 @@ python -m upi_link.cli --credential-file "credential.json" --proxy-file "proxies
 - `POST /api/admin/login`：管理员登录
 - `POST /api/admin/cdks`：生成 CDK
 - `GET /api/admin/cdks`：列出 CDK
+- `GET /api/admin/foarge`：读取脱敏的 Foarge 配置状态
+- `PUT /api/admin/foarge`：保存或清除 Foarge PBK
+- `POST /api/admin/foarge/check`：检查 Foarge PBK 状态
 
 批量任务请求示例。建议把内容保存为仅当前用户可读的 JSON 文件，避免 Token 进入 Shell 历史：
 
@@ -152,7 +171,7 @@ curl -X POST http://127.0.0.1:15336/api/jobs/batch \
 
 ## 测试
 
-测试不会请求 ChatGPT 或 Stripe：
+测试不会请求 ChatGPT、Stripe 或 Foarge：
 
 ```powershell
 python -m pytest

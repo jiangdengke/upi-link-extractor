@@ -16,8 +16,10 @@ from upi_link.auth import AdminAuth, LoginRateLimiter
 from upi_link.cdk import CdkError, CdkStore
 from upi_link.credentials import Credential, CredentialError, parse_credential
 from upi_link.extractor import ExtractionOptions
-from upi_link.jobs import Job, JobManager
+from upi_link.foarge import FoargeClient, FoargeError, run_foarge_payment
+from upi_link.jobs import Job, JobManager, Runner
 from upi_link.schemas import (
+    AdminFoargeSettingsRequest,
     AdminLoginRequest,
     AdminSettingsRequest,
     CdkRevokeRequest,
@@ -132,8 +134,42 @@ def _public_cdk_status(data: dict) -> dict:
         "expires_at",
         "revoked",
         "message",
+        "kind",
     )
     return {key: data.get(key) for key in allowed if key in data}
+
+
+def _make_foarge_runner(job_id: str, foarge_cdk: str) -> Runner:
+    client = FoargeClient(foarge_cdk)
+
+    async def payment_runner(
+        credential,
+        options,
+        qr_path,
+        log,
+        should_cancel,
+    ) -> dict:
+        def publish_progress(state: dict) -> None:
+            jobs.update_progress(job_id, payment=state)
+
+        def publish_link(result: dict) -> None:
+            jobs.update_progress(job_id, result=result)
+            cdks.finalize(job_id, success=True)
+
+        return await run_foarge_payment(
+            credential,
+            options,
+            qr_path,
+            log,
+            should_cancel,
+            client=client,
+            external_ref=f"upi-{job_id}",
+            extract=jobs.run_extraction,
+            on_progress=publish_progress,
+            on_link=publish_link,
+        )
+
+    return payment_runner
 
 
 def _launch_jobs(
@@ -143,9 +179,18 @@ def _launch_jobs(
     options: ExtractionOptions,
     owner_id: str,
 ) -> list[dict]:
+    cdk_status = cdks.verify(cdk)
+    if not cdk_status.get("ok"):
+        raise HTTPException(403, str(cdk_status.get("message") or "CDK 不可用"))
+    foarge_cdk = ""
+    if cdk_status.get("kind") == "foarge":
+        foarge_cdk = settings.get_foarge()["cdk"]
+        if not foarge_cdk:
+            raise HTTPException(503, "支付服务暂未配置")
+
     job_ids = [uuid4().hex for _ in credentials]
     try:
-        cdks.reserve_many(cdk, job_ids)
+        reservation = cdks.reserve_many(cdk, job_ids)
     except CdkError as exc:
         raise HTTPException(403, str(exc)) from exc
 
@@ -153,6 +198,11 @@ def _launch_jobs(
     created_ids: set[str] = set()
     try:
         for job_id, credential in zip(job_ids, credentials):
+            runner = None
+            use_concurrency_slot = True
+            if reservation.get("kind") == "foarge":
+                runner = _make_foarge_runner(job_id, foarge_cdk)
+                use_concurrency_slot = False
             snapshots.append(
                 jobs.create(
                     credential,
@@ -160,6 +210,8 @@ def _launch_jobs(
                     owner_id=owner_id,
                     job_id=job_id,
                     on_complete=_settle_cdk,
+                    runner=runner,
+                    use_concurrency_slot=use_concurrency_slot,
                 )
             )
             created_ids.add(job_id)
@@ -346,6 +398,36 @@ def admin_update_settings(body: AdminSettingsRequest, request: Request) -> dict:
         raise HTTPException(400, str(exc)) from exc
 
 
+@app.get("/api/admin/foarge")
+def admin_get_foarge(request: Request) -> dict:
+    _require_admin(request)
+    return settings.foarge_status()
+
+
+@app.put("/api/admin/foarge")
+def admin_update_foarge(body: AdminFoargeSettingsRequest, request: Request) -> dict:
+    _require_admin(request)
+    try:
+        return settings.update_foarge(
+            cdk=body.cdk.get_secret_value() if body.cdk else "",
+            clear=body.clear,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/admin/foarge/check")
+async def admin_check_foarge(request: Request) -> dict:
+    _require_admin(request)
+    cdk = settings.get_foarge()["cdk"]
+    if not cdk:
+        raise HTTPException(400, "请先配置 Foarge PBK CDK")
+    try:
+        return await FoargeClient(cdk).check_cdk()
+    except FoargeError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
 @app.get("/api/admin/cdks")
 def admin_list_cdks(request: Request) -> dict:
     _require_admin(request)
@@ -355,12 +437,15 @@ def admin_list_cdks(request: Request) -> dict:
 @app.post("/api/admin/cdks")
 def admin_create_cdks(body: CreateCdkRequest, request: Request) -> dict:
     _require_admin(request)
+    if body.kind == "foarge" and not settings.get_foarge()["cdk"]:
+        raise HTTPException(400, "请先配置 Foarge PBK CDK")
     items = cdks.generate(
         count=body.count,
         max_uses=body.max_uses,
         expires_in_days=body.expires_in_days,
         note=body.note,
         prefix=body.prefix,
+        kind=body.kind,
     )
     return {"items": items, "count": len(items)}
 

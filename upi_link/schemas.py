@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 
@@ -39,6 +41,7 @@ class CreateCdkRequest(BaseModel):
     expires_in_days: int = Field(default=30, ge=0, le=3650)
     prefix: str = Field(default="UPI", max_length=12)
     note: str = Field(default="", max_length=500)
+    kind: Literal["extract", "foarge"] = "extract"
 
 
 class CdkRevokeRequest(BaseModel):
@@ -51,3 +54,10 @@ class AdminSettingsRequest(BaseModel):
     approve_retries: int = Field(default=30, ge=1, le=60)
     approve_concurrency: int = Field(default=1, ge=1, le=20)
     proxy_from_step: int = Field(default=3, ge=1, le=6)
+
+
+class AdminFoargeSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cdk: SecretStr | None = Field(default=None, max_length=128)
+    clear: bool = False

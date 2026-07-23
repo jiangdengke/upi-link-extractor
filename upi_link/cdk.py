@@ -13,6 +13,7 @@ class CdkError(ValueError):
 
 
 _ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+CDK_KINDS = {"extract", "foarge"}
 
 
 def normalize_code(value: str) -> str:
@@ -34,11 +35,15 @@ class CdkStore:
         expires_in_days: int = 30,
         note: str = "",
         prefix: str = "UPI",
+        kind: str = "extract",
     ) -> list[dict]:
         count = max(1, min(100, int(count)))
         max_uses = max(1, min(10000, int(max_uses)))
         expires_at = int(time.time()) + expires_in_days * 86400 if expires_in_days > 0 else None
         safe_prefix = "".join(ch for ch in prefix.upper() if ch in string.ascii_uppercase + string.digits)[:12] or "UPI"
+        normalized_kind = str(kind or "extract").strip().lower()
+        if normalized_kind not in CDK_KINDS:
+            raise CdkError("不支持的 CDK 类型")
         created_at = int(time.time())
         generated: list[dict] = []
         with self._lock, self._connect() as conn:
@@ -50,10 +55,17 @@ class CdkStore:
                         """
                         INSERT INTO cdks (
                             code, max_uses, used_uses, reserved_uses,
-                            expires_at, created_at, revoked, note
-                        ) VALUES (?, ?, 0, 0, ?, ?, 0, ?)
+                            expires_at, created_at, revoked, note, kind
+                        ) VALUES (?, ?, 0, 0, ?, ?, 0, ?, ?)
                         """,
-                        (code, max_uses, expires_at, created_at, note.strip()[:500]),
+                        (
+                            code,
+                            max_uses,
+                            expires_at,
+                            created_at,
+                            note.strip()[:500],
+                            normalized_kind,
+                        ),
                     )
                 except sqlite3.IntegrityError:
                     continue
@@ -172,7 +184,8 @@ class CdkStore:
                     expires_at INTEGER,
                     created_at INTEGER NOT NULL,
                     revoked INTEGER NOT NULL DEFAULT 0,
-                    note TEXT NOT NULL DEFAULT ''
+                    note TEXT NOT NULL DEFAULT '',
+                    kind TEXT NOT NULL DEFAULT 'extract'
                 );
                 CREATE TABLE IF NOT EXISTS cdk_reservations (
                     job_id TEXT PRIMARY KEY,
@@ -185,6 +198,16 @@ class CdkStore:
                 CREATE INDEX IF NOT EXISTS idx_cdk_reservations_code
                     ON cdk_reservations(code);
                 """
+            )
+            columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(cdks)").fetchall()
+            }
+            if "kind" not in columns:
+                conn.execute(
+                    "ALTER TABLE cdks ADD COLUMN kind TEXT NOT NULL DEFAULT 'extract'"
+                )
+            conn.execute(
+                "UPDATE cdks SET kind = 'extract' WHERE kind NOT IN ('extract', 'foarge')"
             )
             conn.execute("UPDATE cdks SET reserved_uses = 0")
             conn.execute(
@@ -225,6 +248,7 @@ class CdkStore:
             "created_at": row["created_at"],
             "revoked": bool(row["revoked"]),
             "note": row["note"],
+            "kind": row["kind"],
         }
 
 

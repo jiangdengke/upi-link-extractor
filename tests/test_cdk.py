@@ -46,3 +46,34 @@ def test_cdk_revocation_expiry_and_restart_release(tmp_path) -> None:
     with sqlite3.connect(path) as conn:
         conn.execute("UPDATE cdks SET expires_at = ? WHERE code = ?", (int(time.time()) - 1, code))
     assert restarted.verify(code)["message"] == "CDK 已过期"
+
+
+def test_cdk_kinds_and_legacy_schema_migration(tmp_path) -> None:
+    path = tmp_path / "legacy.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE cdks (
+                code TEXT PRIMARY KEY,
+                max_uses INTEGER NOT NULL,
+                used_uses INTEGER NOT NULL DEFAULT 0,
+                reserved_uses INTEGER NOT NULL DEFAULT 0,
+                expires_at INTEGER,
+                created_at INTEGER NOT NULL,
+                revoked INTEGER NOT NULL DEFAULT 0,
+                note TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO cdks (code, max_uses, created_at) VALUES (?, 1, ?)",
+            ("UPI-OLD1-OLD2-OLD3", int(time.time())),
+        )
+
+    store = CdkStore(path)
+    assert store.verify("UPI-OLD1-OLD2-OLD3")["kind"] == "extract"
+    payment = store.generate(count=1, max_uses=1, kind="foarge")[0]
+    assert payment["kind"] == "foarge"
+
+    with pytest.raises(CdkError, match="不支持的 CDK 类型"):
+        store.generate(count=1, max_uses=1, kind="unknown")

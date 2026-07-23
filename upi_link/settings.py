@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -15,6 +16,7 @@ DEFAULT_SETTINGS = {
     "proxy_from_step": 3,
     "updated_at": 0,
 }
+_FOARGE_CDK_RE = re.compile(r"^PBK-[A-Z0-9]+(?:-[A-Z0-9]+){2,}$")
 
 
 class SettingsStore:
@@ -88,6 +90,55 @@ class SettingsStore:
             "updated_at": data["updated_at"],
         }
 
+    def get_foarge(self) -> dict:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key = 'foarge'"
+            ).fetchone()
+        if row is None:
+            return {"cdk": "", "updated_at": 0}
+        try:
+            saved = json.loads(row["value"])
+        except (TypeError, json.JSONDecodeError):
+            saved = {}
+        return {
+            "cdk": str(saved.get("cdk") or "").strip().upper(),
+            "updated_at": max(0, int(saved.get("updated_at", 0))),
+        }
+
+    def foarge_status(self) -> dict:
+        data = self.get_foarge()
+        cdk = data["cdk"]
+        return {
+            "configured": bool(cdk),
+            "masked_cdk": _mask_secret(cdk),
+            "updated_at": data["updated_at"],
+        }
+
+    def update_foarge(self, *, cdk: str = "", clear: bool = False) -> dict:
+        current = self.get_foarge()
+        normalized = "" if clear else str(cdk or "").strip().upper()
+        if not clear and not normalized:
+            normalized = current["cdk"]
+        if len(normalized) > 128:
+            raise ValueError("Foarge CDK 长度不能超过 128")
+        if normalized and not _FOARGE_CDK_RE.fullmatch(normalized):
+            raise ValueError("Foarge CDK 格式无效，应以 PBK- 开头")
+        data = {"cdk": normalized, "updated_at": int(time.time())}
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES ('foarge', ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (json.dumps(data, ensure_ascii=False), data["updated_at"]),
+            )
+            conn.commit()
+        return self.foarge_status()
+
     def _initialize(self) -> None:
         with self._lock, self._connect() as conn:
             conn.execute(
@@ -120,3 +171,11 @@ class SettingsStore:
             "proxy_from_step": max(1, min(6, int(value.get("proxy_from_step", 3)))),
             "updated_at": max(0, int(value.get("updated_at", 0))),
         }
+
+
+def _mask_secret(value: str) -> str:
+    if not value:
+        return ""
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}****{value[-4:]}"

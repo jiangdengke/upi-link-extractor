@@ -32,6 +32,7 @@ class Job:
     finished_at: str | None = None
     logs: list[str] = field(default_factory=list)
     result: dict | None = None
+    payment: dict | None = None
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     on_complete: Callable[["Job"], None] | None = field(default=None, repr=False)
     completion_notified: bool = field(default=False, repr=False)
@@ -50,6 +51,7 @@ class Job:
             "finished_at": self.finished_at,
             "logs": list(self.logs),
             "result": result or None,
+            "payment": dict(self.payment) if self.payment else None,
         }
 
 
@@ -76,6 +78,8 @@ class JobManager:
         owner_id: str = "",
         job_id: str | None = None,
         on_complete: Callable[[Job], None] | None = None,
+        runner: Runner | None = None,
+        use_concurrency_slot: bool = True,
     ) -> dict:
         self._trim_completed()
         job = Job(
@@ -85,7 +89,15 @@ class JobManager:
             on_complete=on_complete,
         )
         self._jobs[job.id] = job
-        task = asyncio.create_task(self._run(job, credential, options))
+        task = asyncio.create_task(
+            self._run(
+                job,
+                credential,
+                options,
+                runner=runner or self._runner,
+                use_concurrency_slot=use_concurrency_slot,
+            )
+        )
         self._tasks[job.id] = task
         task.add_done_callback(lambda _task, job_id=job.id: self._tasks.pop(job_id, None))
         return job.snapshot()
@@ -130,16 +142,70 @@ class JobManager:
             return None
         return path if path.is_file() else None
 
+    def update_progress(
+        self,
+        job_id: str,
+        *,
+        payment: dict | None = None,
+        result: dict | None = None,
+    ) -> dict | None:
+        job = self._jobs.get(job_id)
+        if job is None:
+            return None
+        if payment is not None:
+            job.payment = dict(payment)
+        if result is not None:
+            merged = dict(job.result or {})
+            previous_link = str(merged.get("payment_link") or "")
+            merged.update(result)
+            current_link = str(merged.get("payment_link") or "")
+            if current_link and current_link != previous_link:
+                merged["generated_at"] = _now()
+            job.result = merged
+        return job.snapshot()
+
+    async def run_extraction(
+        self,
+        credential: Credential,
+        options: ExtractionOptions,
+        qr_path: Path,
+        log: Callable[[str], None],
+        should_cancel: Callable[[], bool],
+    ) -> dict:
+        while not should_cancel():
+            try:
+                await asyncio.wait_for(self._semaphore.acquire(), timeout=0.5)
+                break
+            except asyncio.TimeoutError:
+                continue
+        else:
+            return {"ok": False, "error": "任务已取消"}
+        try:
+            if should_cancel():
+                return {"ok": False, "error": "任务已取消"}
+            return await self._runner(
+                credential,
+                options,
+                qr_path,
+                log,
+                should_cancel,
+            )
+        finally:
+            self._semaphore.release()
+
     async def _run(
         self,
         job: Job,
         credential: Credential,
         options: ExtractionOptions,
+        *,
+        runner: Runner,
+        use_concurrency_slot: bool,
     ) -> None:
         try:
-            async with self._semaphore:
+            async def execute() -> dict | None:
                 if job.cancel_event.is_set():
-                    return
+                    return None
                 job.status = "running"
                 job.started_at = _now()
 
@@ -149,13 +215,20 @@ class JobManager:
                     if len(job.logs) > 500:
                         del job.logs[:-500]
 
-                result = await self._runner(
+                return await runner(
                     credential,
                     options,
                     self.qr_root / f"{job.id}.png",
                     log,
                     job.cancel_event.is_set,
                 )
+
+            if use_concurrency_slot:
+                async with self._semaphore:
+                    result = await execute()
+            else:
+                result = await execute()
+            if result is not None:
                 if result.get("payment_link") and not result.get("generated_at"):
                     result["generated_at"] = _now()
                 job.result = result

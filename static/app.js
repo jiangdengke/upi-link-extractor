@@ -65,9 +65,12 @@ function paintCdkStatus(data) {
   cdkStatus.className = `hint cdk-status ${data.ok ? "ok" : "bad"}`;
   if (data.ok) {
     const expiry = data.expires_at ? ` · 到期 ${formatDateTime(data.expires_at * 1000)}` : " · 永不过期";
-    cdkStatus.textContent = `CDK 可用 · 剩余 ${data.remaining_uses}/${data.max_uses}${expiry}`;
+    const capability = data.kind === "foarge" ? "提链 + 支付" : "仅提链";
+    cdkStatus.textContent = `CDK 可用 · ${capability} · 剩余 ${data.remaining_uses}/${data.max_uses}${expiry}`;
+    submitButton.textContent = data.kind === "foarge" ? "开始提链并支付" : "开始提链";
   } else {
     cdkStatus.textContent = data.message || "CDK 不可用";
+    submitButton.textContent = "开始提链";
   }
 }
 
@@ -155,6 +158,74 @@ async function cancelJob(id) {
   await loadJobs();
 }
 
+const PAYMENT_STAGES = [
+  ["queued", "上游排队"],
+  ["awaiting_checkout", "生成长链"],
+  ["pending", "等待支付"],
+  ["assigned", "支付处理中"],
+  ["completed", "支付完成"],
+];
+
+function paymentStageIndex(status) {
+  const aliases = {
+    promoted: "awaiting_checkout",
+    awaiting_refresh: "awaiting_checkout",
+    refresh_required: "awaiting_checkout",
+  };
+  return PAYMENT_STAGES.findIndex(([value]) => value === (aliases[status] || status));
+}
+
+function paymentStatusLabel(status) {
+  return ({
+    queued: "上游排队中",
+    awaiting_checkout: "正在生成长链",
+    promoted: "正在生成长链",
+    pending: "等待支付",
+    assigned: "支付处理中",
+    completed: "支付完成",
+    cancelled: "支付已取消",
+    canceled: "支付已取消",
+    expired: "支付任务已过期",
+    failed: "支付失败",
+    rejected: "支付被拒绝",
+    awaiting_refresh: "正在刷新长链",
+    refresh_required: "正在刷新长链",
+  })[status] || "状态同步中";
+}
+
+function renderPaymentProgress(payment) {
+  const section = element("section", "payment-progress");
+  const heading = element("div", "payment-progress-head");
+  heading.append(element("strong", "", "支付进度"));
+  heading.append(element("span", `payment-state ${payment.status || ""}`, paymentStatusLabel(payment.status)));
+  section.append(heading);
+
+  const track = element("div", "payment-track");
+  const steps = element("ol", "payment-steps");
+  const current = paymentStageIndex(payment.status);
+  const failed = ["cancelled", "canceled", "expired", "failed", "rejected"].includes(payment.status);
+  PAYMENT_STAGES.forEach(([, label], index) => {
+    let className = "payment-step";
+    if (current >= 0 && index < current) className += " complete";
+    if (current === index) className += failed ? " failed" : " current";
+    const item = element("li", className);
+    item.append(element("span", "payment-dot"), element("span", "", label));
+    steps.append(item);
+  });
+  track.append(steps);
+  section.append(track);
+
+  const meta = [];
+  if (payment.queue_position !== null && payment.queue_position !== undefined) {
+    meta.push(`队列位置 ${payment.queue_position}`);
+  }
+  if (payment.refresh_count) meta.push(`已刷新 ${payment.refresh_count} 次`);
+  if (payment.synced_at) meta.push(`同步于 ${formatDateTime(payment.synced_at)}`);
+  if (meta.length) section.append(element("p", "job-meta", meta.join(" · ")));
+  if (payment.message) section.append(element("p", "payment-message", payment.message));
+  return section;
+}
+
 function renderJob(job) {
   const card = element("article", "job");
   const head = element("div", "job-head");
@@ -163,7 +234,10 @@ function renderJob(job) {
   identity.append(element("div", "job-meta", `${job.id.slice(0, 10)} · ${job.created_at || ""}`));
 
   const controls = element("div", "job-head");
-  controls.append(element("span", `badge ${job.status}`, statusLabel(job.status)));
+  const currentStatus = job.payment && job.status === "running"
+    ? paymentStatusLabel(job.payment.status)
+    : statusLabel(job.status);
+  controls.append(element("span", `badge ${job.status}`, currentStatus));
   if (["queued", "running"].includes(job.status)) {
     const cancel = element("button", "cancel", "取消");
     cancel.type = "button";
@@ -172,6 +246,8 @@ function renderJob(job) {
   }
   head.append(identity, controls);
   card.append(head);
+
+  if (job.payment) card.append(renderPaymentProgress(job.payment));
 
   if (job.result) {
     const result = element("div", "result");
@@ -215,16 +291,19 @@ function renderJob(job) {
     }
     if (job.result.error) details.append(element("p", "result-error", job.result.error));
     if (job.result.qr_url) {
+      const qrVersion = job.result.generated_at || job.finished_at || job.created_at;
+      const qrUrl = `${job.result.qr_url}?v=${encodeURIComponent(qrVersion)}`;
       const qrButton = element("button", "secondary compact", "打开二维码");
       qrButton.type = "button";
-      qrButton.addEventListener("click", () => openQrModal(job.result.qr_url, job.email));
+      qrButton.addEventListener("click", () => openQrModal(qrUrl, job.email));
       resultActions.append(qrButton);
     }
     if (resultActions.childElementCount) details.append(resultActions);
     result.append(details);
     if (job.result.qr_url) {
       const image = element("img", "qr");
-      image.src = `${job.result.qr_url}?v=${encodeURIComponent(job.finished_at || Date.now())}`;
+      const qrVersion = job.result.generated_at || job.finished_at || job.created_at;
+      image.src = `${job.result.qr_url}?v=${encodeURIComponent(qrVersion)}`;
       image.alt = "UPI 二维码";
       image.tabIndex = 0;
       image.setAttribute("role", "button");

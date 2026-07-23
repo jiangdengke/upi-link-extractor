@@ -73,6 +73,27 @@
         </form>
       </section>
 
+      <section class="panel settings-panel">
+        <div class="section-title">
+          <div>
+            <h2>Foarge 支付配置</h2>
+            <p class="hint">支付型 CDK 使用这里保存的 PBK 额度，密钥不会返回用户端。</p>
+          </div>
+          <span id="foarge-summary" class="health">加载中…</span>
+        </div>
+        <form id="foarge-form">
+          <label for="foarge-cdk">Foarge PBK CDK</label>
+          <input id="foarge-cdk" type="password" autocomplete="new-password" spellcheck="false" placeholder="PBK-XXXX-XXXX-XXXX" />
+          <p id="foarge-masked" class="hint">留空保存表示保持现有配置。</p>
+          <div class="actions">
+            <button type="submit">保存支付配置</button>
+            <button id="foarge-check" class="secondary" type="button">检查上游</button>
+            <button id="foarge-clear" class="cancel" type="button">清除</button>
+            <span id="foarge-message" class="message" role="status"></span>
+          </div>
+        </form>
+      </section>
+
       <div class="admin-grid">
         <section class="panel">
           <h2>生成兑换码</h2>
@@ -98,6 +119,11 @@
                 <input id="cdk-prefix" value="UPI" maxlength="12" />
               </div>
             </div>
+            <label for="cdk-kind">兑换码类型</label>
+            <select id="cdk-kind">
+              <option value="extract">仅提链</option>
+              <option value="foarge">提链 + Foarge 支付</option>
+            </select>
             <label for="cdk-note">备注</label>
             <input id="cdk-note" maxlength="500" placeholder="渠道、客户或批次说明" />
             <div class="actions">
@@ -123,6 +149,7 @@
               <thead>
                 <tr>
                   <th>CDK</th>
+                  <th>类型</th>
                   <th>次数</th>
                   <th>状态</th>
                   <th>过期时间</th>

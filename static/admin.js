@@ -11,6 +11,10 @@ const adminToast = document.querySelector("#admin-toast");
 const settingsForm = document.querySelector("#settings-form");
 const settingsMessage = document.querySelector("#settings-message");
 const settingsSummary = document.querySelector("#settings-summary");
+const foargeForm = document.querySelector("#foarge-form");
+const foargeSummary = document.querySelector("#foarge-summary");
+const foargeMessage = document.querySelector("#foarge-message");
+const foargeMasked = document.querySelector("#foarge-masked");
 let toastTimer;
 
 async function request(url, options = {}) {
@@ -67,12 +71,17 @@ function cdkStatus(item) {
   return ["可用", "status-good"];
 }
 
+function cdkKindLabel(kind) {
+  return kind === "foarge" ? "提链 + 支付" : "仅提链";
+}
+
 function renderCdks(items) {
   cdkTable.replaceChildren();
   for (const item of items) {
     const row = document.createElement("tr");
     const codeCell = document.createElement("td");
     codeCell.append(node("code", "", item.code));
+    const kindCell = node("td", "", cdkKindLabel(item.kind));
     const usageCell = node("td", "", `${item.remaining_uses}/${item.max_uses}`);
     if (item.reserved_uses) usageCell.title = `运行中占用 ${item.reserved_uses} 次`;
     const [label, className] = cdkStatus(item);
@@ -94,13 +103,13 @@ function renderCdks(items) {
       await loadCdks();
     });
     actionsCell.append(copy, toggle);
-    row.append(codeCell, usageCell, statusCell, expiryCell, noteCell, actionsCell);
+    row.append(codeCell, kindCell, usageCell, statusCell, expiryCell, noteCell, actionsCell);
     cdkTable.append(row);
   }
   if (!items.length) {
     const row = document.createElement("tr");
     const cell = node("td", "", "还没有 CDK。");
-    cell.colSpan = 6;
+    cell.colSpan = 7;
     row.append(cell);
     cdkTable.append(row);
   }
@@ -122,6 +131,16 @@ async function loadSettings() {
   settingsSummary.classList.add("ok");
 }
 
+async function loadFoarge() {
+  const data = await request("/api/admin/foarge", { cache: "no-store" });
+  foargeSummary.textContent = data.configured ? "已配置" : "未配置";
+  foargeSummary.classList.toggle("ok", data.configured);
+  foargeMasked.textContent = data.configured
+    ? `当前：${data.masked_cdk} · 留空保存表示不更改`
+    : "尚未配置支付 PBK，支付型 CDK 暂不可用。";
+  document.querySelector("#foarge-cdk").value = "";
+}
+
 loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   loginMessage.textContent = "正在登录…";
@@ -134,10 +153,61 @@ loginForm.addEventListener("submit", async (event) => {
     });
     document.querySelector("#admin-password").value = "";
     setAuthenticated(true);
-    await Promise.all([loadCdks(), loadSettings()]);
+    await Promise.all([loadCdks(), loadSettings(), loadFoarge()]);
   } catch (error) {
     loginMessage.textContent = error.message || String(error);
     loginMessage.className = "message error";
+  }
+});
+
+foargeForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  foargeMessage.textContent = "正在保存…";
+  foargeMessage.className = "message";
+  try {
+    await request("/api/admin/foarge", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        cdk: document.querySelector("#foarge-cdk").value || null,
+        clear: false,
+      }),
+    });
+    foargeMessage.textContent = "支付配置已保存";
+    await loadFoarge();
+  } catch (error) {
+    foargeMessage.textContent = error.message || String(error);
+    foargeMessage.className = "message error";
+  }
+});
+
+document.querySelector("#foarge-check").addEventListener("click", async () => {
+  foargeMessage.textContent = "正在检查上游…";
+  foargeMessage.className = "message";
+  try {
+    const data = await request("/api/admin/foarge/check", { method: "POST" });
+    const methods = (data.allowed_payment_methods || []).join(", ") || "未返回";
+    const uses = data.uses_remaining ?? "未返回";
+    foargeMessage.textContent = `连接正常 · 剩余 ${uses} 次 · 支付方式 ${methods}`;
+  } catch (error) {
+    foargeMessage.textContent = error.message || String(error);
+    foargeMessage.className = "message error";
+  }
+});
+
+document.querySelector("#foarge-clear").addEventListener("click", async () => {
+  if (!window.confirm("确认清除 Foarge PBK 配置？支付型 CDK 将暂时不可用。")) return;
+  try {
+    await request("/api/admin/foarge", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clear: true }),
+    });
+    foargeMessage.textContent = "支付配置已清除";
+    await loadFoarge();
+  } catch (error) {
+    foargeMessage.textContent = error.message || String(error);
+    foargeMessage.className = "message error";
   }
 });
 
@@ -180,6 +250,7 @@ generateForm.addEventListener("submit", async (event) => {
         expires_in_days: Number(document.querySelector("#cdk-days").value),
         prefix: document.querySelector("#cdk-prefix").value,
         note: document.querySelector("#cdk-note").value,
+        kind: document.querySelector("#cdk-kind").value,
       }),
     });
     generatedCodes.value = data.items.map((item) => item.code).join("\n");
@@ -206,7 +277,7 @@ async function initialize() {
   try {
     const session = await request("/api/admin/session", { cache: "no-store" });
     setAuthenticated(session.authenticated);
-    if (session.authenticated) await Promise.all([loadCdks(), loadSettings()]);
+    if (session.authenticated) await Promise.all([loadCdks(), loadSettings(), loadFoarge()]);
     if (!session.configured) {
       loginMessage.textContent = "服务器尚未配置 UPI_ADMIN_PASSWORD。";
       loginMessage.className = "message error";

@@ -55,6 +55,21 @@ def test_user_page_contains_no_admin_entry_or_admin_copy() -> None:
     assert "proxy_count" not in app_js
 
 
+def test_foarge_admin_controls_and_user_payment_progress_exist() -> None:
+    index = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    admin = (ROOT / "static" / "admin.html").read_text(encoding="utf-8")
+    admin_js = (ROOT / "static" / "admin.js").read_text(encoding="utf-8")
+    app_js = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    assert 'id="foarge-cdk" type="password"' in admin
+    assert 'value="foarge"' in admin
+    assert "/api/admin/foarge/check" in admin_js
+    assert "PAYMENT_STAGES" in app_js
+    assert "支付进度" in app_js
+    assert "X-Publisher" not in app_js
+    assert "LOCAL ONLY" not in index
+    assert "提交至支付服务用于验单" in index
+
+
 def test_qr_response_is_inline() -> None:
     main = (ROOT / "main.py").read_text(encoding="utf-8")
     assert "filename=path.name" not in main
