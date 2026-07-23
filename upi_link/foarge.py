@@ -70,7 +70,7 @@ class FoargeClient:
                 },
             )
         except FoargeError as exc:
-            if not exc.retryable:
+            if exc.status_code not in {0} and exc.status_code < 500:
                 raise
             for _attempt in range(3):
                 try:
@@ -130,11 +130,13 @@ class FoargeClient:
         )
         return _task_from_payload(data)
 
-    async def cancel_task(self, task_id: str) -> None:
-        await self._request("POST", f"/tasks/{_safe_task_id(task_id)}/cancel")
+    async def cancel_task(self, task_id: str) -> dict | None:
+        data = await self._request("POST", f"/tasks/{_safe_task_id(task_id)}/cancel")
+        return _optional_task(data)
 
-    async def smart_release(self, task_id: str) -> None:
-        await self._request("POST", f"/tasks/{_safe_task_id(task_id)}/smart-release")
+    async def smart_release(self, task_id: str) -> dict | None:
+        data = await self._request("POST", f"/tasks/{_safe_task_id(task_id)}/smart-release")
+        return _optional_task(data)
 
     async def _request(
         self,
@@ -179,6 +181,111 @@ class FoargeClient:
         return data
 
 
+class FoargeClientPool:
+    def __init__(
+        self,
+        claim_cdk: Callable[[], str],
+        bind_task: Callable[[str, str], None],
+        mark_used: Callable[[str], None],
+        release_cdk: Callable[[str], None],
+        *,
+        client_factory=FoargeClient,
+        max_attempts: int = 50,
+    ) -> None:
+        self._claim_cdk = claim_cdk
+        self._bind_task = bind_task
+        self._mark_used = mark_used
+        self._release_cdk = release_cdk
+        self._client_factory = client_factory
+        self._max_attempts = max(1, min(50, int(max_attempts)))
+        self._active: FoargeClient | None = None
+        self._active_cdk = ""
+        self._settled = False
+
+    async def create_task(self, *, email: str, external_ref: str) -> dict:
+        failures: list[str] = []
+        for _attempt in range(self._max_attempts):
+            try:
+                cdk = self._claim_cdk()
+            except ValueError as exc:
+                reason = ", ".join(dict.fromkeys(failures)) or str(exc)
+                raise FoargeError(
+                    f"Foarge 一次性 CDK 池无可用兑换码：{reason}",
+                    status_code=402,
+                ) from exc
+            try:
+                client = self._client_factory(cdk)
+            except Exception:
+                self._release_cdk(cdk)
+                raise
+            try:
+                task = await client.create_task(email=email, external_ref=external_ref)
+            except FoargeError as exc:
+                if _can_fail_over(exc):
+                    self._mark_used(cdk)
+                    failures.append(exc.code or str(exc))
+                    continue
+                if exc.status_code == 0 or exc.status_code >= 500:
+                    pass
+                else:
+                    self._release_cdk(cdk)
+                raise
+            except Exception:
+                raise
+            self._active = client
+            self._active_cdk = cdk
+            try:
+                self._bind_task(cdk, _task_id(task))
+            except Exception:
+                try:
+                    await client.smart_release(_task_id(task))
+                except Exception:  # noqa: BLE001 - best-effort upstream cleanup
+                    pass
+                raise
+            return task
+        reason = ", ".join(dict.fromkeys(failures)) or "全部不可用"
+        raise FoargeError(f"Foarge CDK 池无可用额度：{reason}", status_code=402)
+
+    async def get_task(self, task_id: str) -> dict:
+        return await self._bound().get_task(task_id)
+
+    async def submit_checkout(
+        self,
+        task_id: str,
+        *,
+        access_token: str,
+        payment_link: str,
+    ) -> dict:
+        return await self._bound().submit_checkout(
+            task_id,
+            access_token=access_token,
+            payment_link=payment_link,
+        )
+
+    async def refresh_checkout(self, task_id: str, *, payment_link: str) -> dict:
+        return await self._bound().refresh_checkout(task_id, payment_link=payment_link)
+
+    async def cancel_task(self, task_id: str) -> dict | None:
+        return await self._bound().cancel_task(task_id)
+
+    async def smart_release(self, task_id: str) -> dict | None:
+        return await self._bound().smart_release(task_id)
+
+    def settle(self, *, success: bool) -> None:
+        if self._settled or not self._active_cdk:
+            return
+        if success:
+            self._mark_used(self._active_cdk)
+        else:
+            self._release_cdk(self._active_cdk)
+        self._settled = True
+
+    def _bound(self) -> FoargeClient:
+        if self._active is None:
+            raise FoargeError("Foarge 任务尚未绑定 CDK")
+        return self._active
+
+
 async def run_foarge_payment(
     credential: Credential,
     options: ExtractionOptions,
@@ -186,7 +293,7 @@ async def run_foarge_payment(
     log: LogFn,
     should_cancel: CancelFn,
     *,
-    client: FoargeClient,
+    client: FoargeClient | FoargeClientPool,
     external_ref: str,
     extract: ExtractorFn,
     on_progress: ProgressFn,
@@ -215,16 +322,36 @@ async def run_foarge_payment(
             last_status = status
         return status
 
+    def settle_pool(success: bool) -> None:
+        settle = getattr(client, "settle", None)
+        if callable(settle):
+            settle(success=success)
+
     async def release_upstream() -> None:
         if not task_id:
             return
         try:
             if submitted:
-                await client.smart_release(task_id)
+                task = await client.smart_release(task_id)
             else:
-                await client.cancel_task(task_id)
+                task = await client.cancel_task(task_id)
         except FoargeError as exc:
             log(f"[支付] 上游释放失败：{exc}")
+            return
+        if not submitted:
+            settle_pool(False)
+            return
+        if task is None:
+            try:
+                task = await client.get_task(task_id)
+            except FoargeError as exc:
+                log(f"[支付] 上游释放结果待确认：{exc}")
+                return
+        released_status = str(task.get("status") or "").strip().lower()
+        if released_status in SUCCESS_STATUSES:
+            settle_pool(True)
+        elif released_status in FAILED_STATUSES:
+            settle_pool(False)
 
     def failed(message: str) -> dict:
         result = dict(link_result or {})
@@ -245,8 +372,10 @@ async def run_foarge_payment(
                 await release_upstream()
                 return failed("任务已取消")
             if status in SUCCESS_STATUSES:
+                settle_pool(True)
                 return failed("Foarge 任务在提链前已结束")
             if status in FAILED_STATUSES:
+                settle_pool(False)
                 return failed(f"Foarge 任务已结束：{status}")
             if time.monotonic() - started >= timeout_seconds:
                 await release_upstream()
@@ -298,10 +427,12 @@ async def run_foarge_payment(
                 await release_upstream()
                 return failed("任务已取消")
             if status in SUCCESS_STATUSES:
+                settle_pool(True)
                 result = dict(link_result)
                 result.update({"ok": True, "payment_completed": True})
                 return result
             if status in FAILED_STATUSES:
+                settle_pool(False)
                 return failed(f"Foarge 支付未完成：{status}")
             if time.monotonic() - started >= timeout_seconds:
                 await release_upstream()
@@ -375,6 +506,13 @@ def _task_from_payload(data: dict) -> dict:
     raise FoargeError("Foarge 返回的任务数据不完整")
 
 
+def _optional_task(data: dict) -> dict | None:
+    try:
+        return _task_from_payload(data)
+    except FoargeError:
+        return None
+
+
 def _task_id(task: dict) -> str:
     value = str(task.get("id") or task.get("task_id") or "")
     return _safe_task_id(value)
@@ -394,6 +532,20 @@ def _needs_refresh(task: dict) -> bool:
         or _as_bool(task.get("qr_needs_refresh"))
         or _as_bool(task.get("qr_expired"))
     )
+
+
+def _can_fail_over(error: FoargeError) -> bool:
+    code = error.code.strip().lower()
+    if error.status_code in {401, 402}:
+        return True
+    if error.status_code == 429:
+        return False
+    return code in {
+        "invalid_cdk",
+        "cdk_exhausted",
+        "insufficient_uses",
+        "max_open_tasks",
+    }
 
 
 async def _sleep(delay: float, should_cancel: CancelFn) -> None:

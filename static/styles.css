@@ -185,6 +185,14 @@ body.modal-open { overflow: hidden; }
 .settings-panel { margin-bottom: 18px; }
 .generated-box { margin-top: 18px; }
 .generated-box textarea { min-height: 150px; }
+.foarge-results { display: grid; gap: 8px; margin-top: 18px; }
+.foarge-result { display: grid; grid-template-columns: minmax(150px, auto) auto 1fr; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); font-size: 12px; }
+.foarge-result code { color: var(--accent); }
+.foarge-result-status { color: var(--muted); font-weight: 700; }
+.foarge-result-status.available { color: var(--accent); }
+.foarge-result-status.reserved { color: var(--warning); }
+.foarge-result-status.used { color: var(--danger); }
+.foarge-result-detail { color: var(--muted); overflow-wrap: anywhere; }
 .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 14px; }
 table { width: 100%; border-collapse: collapse; min-width: 820px; }
 th, td { padding: 11px 12px; border-bottom: 1px solid var(--border); text-align: left; font-size: 13px; vertical-align: top; }
@@ -203,6 +211,8 @@ td code { color: var(--accent); font-size: 12px; }
   .hero-actions { width: 100%; justify-content: space-between; }
   .grid.two, .grid.three, .result { grid-template-columns: 1fr; }
   .cdk-row, .admin-grid { grid-template-columns: 1fr; }
+  .foarge-result { grid-template-columns: 1fr auto; }
+  .foarge-result-detail { grid-column: 1 / -1; }
   .job-head { align-items: flex-start; }
   .qr { width: min(260px, 100%); }
 }

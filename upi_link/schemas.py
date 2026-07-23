@@ -59,5 +59,6 @@ class AdminSettingsRequest(BaseModel):
 class AdminFoargeSettingsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    cdks: SecretStr | None = Field(default=None, max_length=10000)
     cdk: SecretStr | None = Field(default=None, max_length=128)
     clear: bool = False

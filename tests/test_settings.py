@@ -35,26 +35,3 @@ def test_settings_reject_more_than_100_proxies(tmp_path) -> None:
             approve_concurrency=1,
             proxy_from_step=3,
         )
-
-
-def test_foarge_cdk_is_persisted_and_only_exposed_masked(tmp_path) -> None:
-    path = tmp_path / "foarge.db"
-    store = SettingsStore(path)
-    assert store.foarge_status() == {
-        "configured": False,
-        "masked_cdk": "",
-        "updated_at": 0,
-    }
-
-    status = store.update_foarge(cdk="pbk-abcd-efgh-ijkl")
-    assert status["configured"] is True
-    assert status["masked_cdk"] == "PBK-****IJKL"
-    assert "PBK-ABCD-EFGH-IJKL" not in repr(status)
-
-    restarted = SettingsStore(path)
-    assert restarted.get_foarge()["cdk"] == "PBK-ABCD-EFGH-IJKL"
-    restarted.update_foarge(clear=True)
-    assert restarted.foarge_status()["configured"] is False
-
-    with pytest.raises(ValueError, match="PBK-"):
-        restarted.update_foarge(cdk="invalid")

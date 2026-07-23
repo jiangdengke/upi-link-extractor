@@ -60,7 +60,8 @@ def test_foarge_admin_controls_and_user_payment_progress_exist() -> None:
     admin = (ROOT / "static" / "admin.html").read_text(encoding="utf-8")
     admin_js = (ROOT / "static" / "admin.js").read_text(encoding="utf-8")
     app_js = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
-    assert 'id="foarge-cdk" type="password"' in admin
+    assert 'id="foarge-cdks"' in admin
+    assert "每行一个" in admin
     assert 'value="foarge"' in admin
     assert "/api/admin/foarge/check" in admin_js
     assert "PAYMENT_STAGES" in app_js

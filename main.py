@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import secrets
@@ -16,7 +17,8 @@ from upi_link.auth import AdminAuth, LoginRateLimiter
 from upi_link.cdk import CdkError, CdkStore
 from upi_link.credentials import Credential, CredentialError, parse_credential
 from upi_link.extractor import ExtractionOptions
-from upi_link.foarge import FoargeClient, FoargeError, run_foarge_payment
+from upi_link.foarge import FoargeClient, FoargeClientPool, FoargeError, run_foarge_payment
+from upi_link.foarge_pool import FoargeCdkStore, FoargePoolError
 from upi_link.jobs import Job, JobManager, Runner
 from upi_link.schemas import (
     AdminFoargeSettingsRequest,
@@ -62,6 +64,7 @@ jobs = JobManager(RUNTIME_DIR / "qr", max_concurrency=_max_concurrency())
 DB_PATH = RUNTIME_DIR / "data" / "upi.db"
 cdks = CdkStore(DB_PATH)
 settings = SettingsStore(DB_PATH)
+foarge_cdks = FoargeCdkStore(DB_PATH)
 admin_auth = AdminAuth(
     os.getenv("UPI_ADMIN_PASSWORD", ""),
     os.getenv("UPI_SESSION_SECRET", ""),
@@ -139,8 +142,14 @@ def _public_cdk_status(data: dict) -> dict:
     return {key: data.get(key) for key in allowed if key in data}
 
 
-def _make_foarge_runner(job_id: str, foarge_cdk: str) -> Runner:
-    client = FoargeClient(foarge_cdk)
+def _make_foarge_runner(job_id: str) -> Runner:
+    start_index = int(job_id[:8], 16)
+    client = FoargeClientPool(
+        lambda: foarge_cdks.claim(job_id, start_index=start_index),
+        lambda cdk, task_id: foarge_cdks.bind_task(job_id, cdk, task_id),
+        lambda cdk: foarge_cdks.mark_used(job_id, cdk),
+        lambda cdk: foarge_cdks.release(job_id, cdk),
+    )
 
     async def payment_runner(
         credential,
@@ -182,11 +191,13 @@ def _launch_jobs(
     cdk_status = cdks.verify(cdk)
     if not cdk_status.get("ok"):
         raise HTTPException(403, str(cdk_status.get("message") or "CDK 不可用"))
-    foarge_cdk = ""
     if cdk_status.get("kind") == "foarge":
-        foarge_cdk = settings.get_foarge()["cdk"]
-        if not foarge_cdk:
-            raise HTTPException(503, "支付服务暂未配置")
+        available = foarge_cdks.status()["available_count"]
+        if available < len(credentials):
+            raise HTTPException(
+                503,
+                f"支付服务可用一次性 CDK 不足：需要 {len(credentials)} 个，剩余 {available} 个",
+            )
 
     job_ids = [uuid4().hex for _ in credentials]
     try:
@@ -201,7 +212,7 @@ def _launch_jobs(
             runner = None
             use_concurrency_slot = True
             if reservation.get("kind") == "foarge":
-                runner = _make_foarge_runner(job_id, foarge_cdk)
+                runner = _make_foarge_runner(job_id)
                 use_concurrency_slot = False
             snapshots.append(
                 jobs.create(
@@ -401,31 +412,84 @@ def admin_update_settings(body: AdminSettingsRequest, request: Request) -> dict:
 @app.get("/api/admin/foarge")
 def admin_get_foarge(request: Request) -> dict:
     _require_admin(request)
-    return settings.foarge_status()
+    return foarge_cdks.status()
 
 
 @app.put("/api/admin/foarge")
 def admin_update_foarge(body: AdminFoargeSettingsRequest, request: Request) -> dict:
     _require_admin(request)
     try:
-        return settings.update_foarge(
-            cdk=body.cdk.get_secret_value() if body.cdk else "",
+        raw_cdks = (
+            body.cdks.get_secret_value()
+            if body.cdks
+            else body.cdk.get_secret_value() if body.cdk else ""
+        )
+        return foarge_cdks.configure(
+            raw_cdks,
             clear=body.clear,
         )
-    except ValueError as exc:
+    except FoargePoolError as exc:
         raise HTTPException(400, str(exc)) from exc
 
 
 @app.post("/api/admin/foarge/check")
 async def admin_check_foarge(request: Request) -> dict:
     _require_admin(request)
-    cdk = settings.get_foarge()["cdk"]
-    if not cdk:
+    entries = foarge_cdks.entries_for_check()
+    if not entries:
         raise HTTPException(400, "请先配置 Foarge PBK CDK")
-    try:
-        return await FoargeClient(cdk).check_cdk()
-    except FoargeError as exc:
-        raise HTTPException(502, str(exc)) from exc
+    semaphore = asyncio.Semaphore(5)
+
+    async def check_entry(entry: dict) -> dict:
+        item = {
+            "masked_cdk": entry["masked_cdk"],
+            "status": entry["status"],
+        }
+        if entry["status"] == "available":
+            try:
+                async with semaphore:
+                    item.update(await FoargeClient(entry["code"]).check_cdk())
+            except FoargeError as exc:
+                item.update({"ok": False, "error": str(exc)})
+        elif entry["status"] == "reserved" and entry.get("claimed_by"):
+            client = FoargeClient(entry["code"])
+            try:
+                async with semaphore:
+                    if entry.get("upstream_task_id"):
+                        task = await client.get_task(entry["upstream_task_id"])
+                    else:
+                        task = await client.find_task(
+                            external_ref=f"upi-{entry['claimed_by']}"
+                        )
+                if task is None:
+                    foarge_cdks.release(entry["claimed_by"], entry["code"])
+                    item.update({"status": "available", "message": "未发现上游任务，已释放"})
+                else:
+                    task_id = str(task.get("id") or task.get("task_id") or "")
+                    if task_id and not entry.get("upstream_task_id"):
+                        foarge_cdks.bind_task(entry["claimed_by"], entry["code"], task_id)
+                    upstream_status = str(task.get("status") or "unknown").lower()
+                    item["upstream_status"] = upstream_status
+                    if upstream_status in {"completed"}:
+                        foarge_cdks.mark_used(entry["claimed_by"], entry["code"])
+                        item["status"] = "used"
+                    elif upstream_status in {
+                        "cancelled",
+                        "canceled",
+                        "expired",
+                        "failed",
+                        "rejected",
+                    }:
+                        foarge_cdks.release(entry["claimed_by"], entry["code"])
+                        item["status"] = "available"
+            except FoargePoolError:
+                item["status"] = foarge_cdks.entry_status(entry["code"]) or item["status"]
+            except FoargeError as exc:
+                item.update({"ok": False, "error": str(exc)})
+        return item
+
+    items = await asyncio.gather(*(check_entry(entry) for entry in entries))
+    return {"ok": all(item.get("ok", True) for item in items), "items": items}
 
 
 @app.get("/api/admin/cdks")
@@ -437,8 +501,8 @@ def admin_list_cdks(request: Request) -> dict:
 @app.post("/api/admin/cdks")
 def admin_create_cdks(body: CreateCdkRequest, request: Request) -> dict:
     _require_admin(request)
-    if body.kind == "foarge" and not settings.get_foarge()["cdk"]:
-        raise HTTPException(400, "请先配置 Foarge PBK CDK")
+    if body.kind == "foarge" and foarge_cdks.status()["available_count"] <= 0:
+        raise HTTPException(400, "请先添加可用的 Foarge 一次性 PBK CDK")
     items = cdks.generate(
         count=body.count,
         max_uses=body.max_uses,

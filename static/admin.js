@@ -15,6 +15,7 @@ const foargeForm = document.querySelector("#foarge-form");
 const foargeSummary = document.querySelector("#foarge-summary");
 const foargeMessage = document.querySelector("#foarge-message");
 const foargeMasked = document.querySelector("#foarge-masked");
+const foargeResults = document.querySelector("#foarge-results");
 let toastTimer;
 
 async function request(url, options = {}) {
@@ -133,12 +134,37 @@ async function loadSettings() {
 
 async function loadFoarge() {
   const data = await request("/api/admin/foarge", { cache: "no-store" });
-  foargeSummary.textContent = data.configured ? "已配置" : "未配置";
-  foargeSummary.classList.toggle("ok", data.configured);
+  foargeSummary.textContent = data.configured
+    ? `可用 ${data.available_count} / 总计 ${data.configured_count}`
+    : "未配置";
+  foargeSummary.classList.toggle("ok", data.available_count > 0);
   foargeMasked.textContent = data.configured
-    ? `当前：${data.masked_cdk} · 留空保存表示不更改`
-    : "尚未配置支付 PBK，支付型 CDK 暂不可用。";
-  document.querySelector("#foarge-cdk").value = "";
+    ? `可用 ${data.available_count} · 占用 ${data.reserved_count} · 已用 ${data.used_count}`
+    : "尚未添加支付 PBK，支付型 CDK 暂不可用。";
+  document.querySelector("#foarge-cdks").value = "";
+  renderFoargeEntries(data.entries || []);
+}
+
+function foargeStatusLabel(status) {
+  return ({ available: "可用", reserved: "占用中", used: "已用" })[status] || status;
+}
+
+function renderFoargeEntries(items) {
+  foargeResults.replaceChildren();
+  for (const item of items) {
+    const row = node("div", "foarge-result");
+    row.append(
+      node("code", "", item.masked_cdk || "—"),
+      node("span", `foarge-result-status ${item.status || ""}`, foargeStatusLabel(item.status)),
+    );
+    const detail = item.error
+      ? item.error
+      : item.ok === true
+        ? `上游可用 · 剩余 ${item.uses_remaining ?? "未返回"} 次`
+        : item.message || (item.upstream_status ? `上游状态 ${item.upstream_status}` : "");
+    if (detail) row.append(node("span", "foarge-result-detail", detail));
+    foargeResults.append(row);
+  }
 }
 
 loginForm.addEventListener("submit", async (event) => {
@@ -169,11 +195,11 @@ foargeForm.addEventListener("submit", async (event) => {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        cdk: document.querySelector("#foarge-cdk").value || null,
+        cdks: document.querySelector("#foarge-cdks").value || null,
         clear: false,
       }),
     });
-    foargeMessage.textContent = "支付配置已保存";
+    foargeMessage.textContent = "一次性 CDK 已添加";
     await loadFoarge();
   } catch (error) {
     foargeMessage.textContent = error.message || String(error);
@@ -186,9 +212,9 @@ document.querySelector("#foarge-check").addEventListener("click", async () => {
   foargeMessage.className = "message";
   try {
     const data = await request("/api/admin/foarge/check", { method: "POST" });
-    const methods = (data.allowed_payment_methods || []).join(", ") || "未返回";
-    const uses = data.uses_remaining ?? "未返回";
-    foargeMessage.textContent = `连接正常 · 剩余 ${uses} 次 · 支付方式 ${methods}`;
+    renderFoargeEntries(data.items || []);
+    const available = (data.items || []).filter((item) => item.status === "available" && item.ok).length;
+    foargeMessage.textContent = `检查完成 · 上游可用 ${available} 个`;
   } catch (error) {
     foargeMessage.textContent = error.message || String(error);
     foargeMessage.className = "message error";
@@ -196,7 +222,7 @@ document.querySelector("#foarge-check").addEventListener("click", async () => {
 });
 
 document.querySelector("#foarge-clear").addEventListener("click", async () => {
-  if (!window.confirm("确认清除 Foarge PBK 配置？支付型 CDK 将暂时不可用。")) return;
+  if (!window.confirm("确认清除全部 Foarge PBK 及其使用状态？支付型 CDK 将暂时不可用。")) return;
   try {
     await request("/api/admin/foarge", {
       method: "PUT",

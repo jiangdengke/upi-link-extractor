@@ -82,15 +82,16 @@
           <span id="foarge-summary" class="health">加载中…</span>
         </div>
         <form id="foarge-form">
-          <label for="foarge-cdk">Foarge PBK CDK</label>
-          <input id="foarge-cdk" type="password" autocomplete="new-password" spellcheck="false" placeholder="PBK-XXXX-XXXX-XXXX" />
-          <p id="foarge-masked" class="hint">留空保存表示保持现有配置。</p>
+          <label for="foarge-cdks">Foarge 一次性 PBK CDK（每行一个）</label>
+          <textarea id="foarge-cdks" rows="5" autocomplete="off" spellcheck="false" placeholder="PBK-XXXX-XXXX-XXXX&#10;PBK-YYYY-YYYY-YYYY"></textarea>
+          <p id="foarge-masked" class="hint">批量添加后输入框会清空，已用兑换码不会再次分配。</p>
           <div class="actions">
-            <button type="submit">保存支付配置</button>
+            <button type="submit">添加到码池</button>
             <button id="foarge-check" class="secondary" type="button">检查上游</button>
             <button id="foarge-clear" class="cancel" type="button">清除</button>
             <span id="foarge-message" class="message" role="status"></span>
           </div>
+          <div id="foarge-results" class="foarge-results"></div>
         </form>
       </section>
 

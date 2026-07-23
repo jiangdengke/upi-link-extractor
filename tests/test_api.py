@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 import main
 from upi_link.auth import AdminAuth, LoginRateLimiter
 from upi_link.cdk import CdkStore
+from upi_link.foarge_pool import FoargeCdkStore
 from upi_link.jobs import JobManager
 from upi_link.settings import SettingsStore
 
@@ -47,6 +48,8 @@ def test_admin_login_and_cdk_generation(monkeypatch, tmp_path) -> None:
     store = CdkStore(tmp_path / "admin.db")
     monkeypatch.setattr(main, "cdks", store)
     monkeypatch.setattr(main, "settings", SettingsStore(tmp_path / "admin.db"))
+    payment_pool = FoargeCdkStore(tmp_path / "admin.db")
+    monkeypatch.setattr(main, "foarge_cdks", payment_pool)
     monkeypatch.setattr(main, "admin_auth", AdminAuth("correct-password", "test-secret"))
     monkeypatch.setattr(main, "login_limiter", LoginRateLimiter())
 
@@ -87,7 +90,7 @@ def test_admin_login_and_cdk_generation(monkeypatch, tmp_path) -> None:
             },
         )
         assert blocked_payment_cdk.status_code == 400
-        assert "Foarge PBK" in blocked_payment_cdk.json()["detail"]
+        assert "一次性 PBK" in blocked_payment_cdk.json()["detail"]
 
         saved = admin.put(
             "/api/admin/settings",
@@ -105,11 +108,16 @@ def test_admin_login_and_cdk_generation(monkeypatch, tmp_path) -> None:
 
         foarge = admin.put(
             "/api/admin/foarge",
-            json={"cdk": "PBK-ABCD-EFGH-IJKL", "clear": False},
+            json={
+                "cdks": "PBK-ABCD-EFGH-IJKL\nPBK-MNOP-QRST-UVWX",
+                "clear": False,
+            },
         )
         assert foarge.status_code == 200
         assert foarge.json()["configured"] is True
-        assert foarge.json()["masked_cdk"] == "PBK-****IJKL"
+        assert foarge.json()["configured_count"] == 2
+        assert foarge.json()["available_count"] == 2
+        assert foarge.json()["entries"][0]["masked_cdk"] == "PBK-****IJKL"
         assert "PBK-ABCD-EFGH-IJKL" not in repr(foarge.json())
         assert "cdk" not in admin.get("/api/admin/foarge").json()
 
@@ -233,7 +241,8 @@ def test_foarge_job_consumes_cdk_when_link_succeeds(monkeypatch, tmp_path) -> No
     store = CdkStore(tmp_path / "foarge-job.db")
     code = store.generate(count=1, max_uses=1, kind="foarge")[0]["code"]
     app_settings = SettingsStore(tmp_path / "foarge-job.db")
-    app_settings.update_foarge(cdk="PBK-TEST-TEST-TEST")
+    payment_pool = FoargeCdkStore(tmp_path / "foarge-job.db")
+    payment_pool.configure("PBK-TEST-TEST-TEST")
 
     async def fake_payment(
         credential,
@@ -262,6 +271,7 @@ def test_foarge_job_consumes_cdk_when_link_succeeds(monkeypatch, tmp_path) -> No
 
     monkeypatch.setattr(main, "cdks", store)
     monkeypatch.setattr(main, "settings", app_settings)
+    monkeypatch.setattr(main, "foarge_cdks", payment_pool)
     monkeypatch.setattr(main, "jobs", JobManager(tmp_path / "foarge-qr"))
     monkeypatch.setattr(main, "run_foarge_payment", fake_payment)
 
@@ -293,8 +303,10 @@ def test_foarge_job_consumes_cdk_when_link_succeeds(monkeypatch, tmp_path) -> No
 def test_foarge_cdk_requires_admin_upstream_configuration(monkeypatch, tmp_path) -> None:
     store = CdkStore(tmp_path / "missing-foarge.db")
     code = store.generate(count=1, max_uses=1, kind="foarge")[0]["code"]
+    payment_pool = FoargeCdkStore(tmp_path / "missing-foarge.db")
     monkeypatch.setattr(main, "cdks", store)
     monkeypatch.setattr(main, "settings", SettingsStore(tmp_path / "missing-foarge.db"))
+    monkeypatch.setattr(main, "foarge_cdks", payment_pool)
 
     with TestClient(main.app) as owner:
         response = owner.post(
@@ -308,3 +320,37 @@ def test_foarge_cdk_requires_admin_upstream_configuration(monkeypatch, tmp_path)
         )
     assert response.status_code == 503
     assert store.verify(code)["remaining_uses"] == 1
+
+
+def test_admin_foarge_check_reconciles_reserved_tasks(monkeypatch, tmp_path) -> None:
+    path = tmp_path / "reconcile.db"
+    payment_pool = FoargeCdkStore(path)
+    payment_pool.configure("PBK-AAAA-BBBB-0001\nPBK-AAAA-BBBB-0002")
+    failed_code = payment_pool.claim("job-failed", start_index=0)
+    payment_pool.bind_task("job-failed", failed_code, "task_failed")
+    completed_code = payment_pool.claim("job-completed", start_index=0)
+    payment_pool.bind_task("job-completed", completed_code, "task_completed")
+
+    class ReconcileClient:
+        def __init__(self, cdk: str) -> None:
+            self.cdk = cdk
+
+        async def get_task(self, task_id: str) -> dict:
+            status = "completed" if task_id == "task_completed" else "failed"
+            return {"id": task_id, "status": status}
+
+    monkeypatch.setattr(main, "foarge_cdks", payment_pool)
+    monkeypatch.setattr(main, "FoargeClient", ReconcileClient)
+    monkeypatch.setattr(main, "admin_auth", AdminAuth("correct-password", "test-secret"))
+    monkeypatch.setattr(main, "login_limiter", LoginRateLimiter())
+
+    with TestClient(main.app) as admin:
+        assert admin.post(
+            "/api/admin/login", json={"password": "correct-password"}
+        ).status_code == 200
+        checked = admin.post("/api/admin/foarge/check")
+
+    assert checked.status_code == 200
+    assert payment_pool.entry_status(failed_code) == "available"
+    assert payment_pool.entry_status(completed_code) == "used"
+    assert "PBK-AAAA-BBBB" not in repr(checked.json())

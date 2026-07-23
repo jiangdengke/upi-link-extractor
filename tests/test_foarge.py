@@ -15,6 +15,7 @@ class FakeFoargeClient:
         self.cancelled = False
         self.released = False
         self.polls = 0
+        self.settlements: list[bool] = []
 
     async def create_task(self, *, email: str, external_ref: str) -> dict:
         assert email == "owner@example.com"
@@ -53,13 +54,17 @@ class FakeFoargeClient:
         self.refreshed.append(payment_link)
         return {"id": task_id, "status": "assigned", "refresh_count": 1}
 
-    async def cancel_task(self, task_id: str) -> None:
+    async def cancel_task(self, task_id: str) -> dict:
         assert task_id == "task_1"
         self.cancelled = True
+        return {"id": task_id, "status": "cancelled"}
 
     async def smart_release(self, task_id: str) -> None:
         assert task_id == "task_1"
         self.released = True
+
+    def settle(self, *, success: bool) -> None:
+        self.settlements.append(success)
 
 
 def test_foarge_payment_waits_for_promotion_then_completes(tmp_path) -> None:
@@ -114,6 +119,7 @@ def test_foarge_payment_waits_for_promotion_then_completes(tmp_path) -> None:
         "completed",
     ]
     assert "x" * 80 not in repr(progress)
+    assert client.settlements == [True]
 
 
 def test_foarge_payment_refreshes_expired_link_without_new_task(tmp_path) -> None:
@@ -180,6 +186,7 @@ def test_foarge_extraction_failure_cancels_upstream_reservation(tmp_path) -> Non
     assert result["ok"] is False
     assert client.cancelled is True
     assert client.submitted == []
+    assert client.settlements == [False]
 
 
 def test_foarge_errors_cannot_echo_access_token(tmp_path) -> None:
