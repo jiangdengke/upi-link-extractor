@@ -7,6 +7,7 @@ const health = document.querySelector("#health");
 const cdkInput = document.querySelector("#cdk");
 const cdkStatus = document.querySelector("#cdk-status");
 const checkCdkButton = document.querySelector("#check-cdk");
+const linkTypeInput = document.querySelector("#link-type");
 const qrModal = document.querySelector("#qr-modal");
 const qrModalImage = document.querySelector("#qr-modal-image");
 const qrModalEmail = document.querySelector("#qr-modal-email");
@@ -36,7 +37,17 @@ function statusLabel(status) {
 function safePaymentLink(value) {
   try {
     const url = new URL(value);
-    return url.protocol === "https:" && url.hostname === "payments.stripe.com" ? url.href : "";
+    const hostname = url.hostname.toLowerCase();
+    const trustedHost = hostname === "payments.stripe.com"
+      || hostname === "nicepay.co.kr"
+      || hostname.endsWith(".nicepay.co.kr")
+      || hostname === "nicepay.com"
+      || hostname.endsWith(".nicepay.com")
+      || hostname === "kakao.com"
+      || hostname.endsWith(".kakao.com")
+      || hostname === "kakaopay.com"
+      || hostname.endsWith(".kakaopay.com");
+    return url.protocol === "https:" && trustedHost ? url.href : "";
   } catch {
     return "";
   }
@@ -68,9 +79,12 @@ function paintCdkStatus(data) {
     const capability = data.kind === "foarge" ? "提链 + 支付" : "仅提链";
     cdkStatus.textContent = `CDK 可用 · ${capability} · 剩余 ${data.remaining_uses}/${data.max_uses}${expiry}`;
     submitButton.textContent = data.kind === "foarge" ? "开始提链并支付" : "开始提链";
+    if (data.kind === "foarge") linkTypeInput.value = "upi";
+    linkTypeInput.disabled = data.kind === "foarge";
   } else {
     cdkStatus.textContent = data.message || "CDK 不可用";
     submitButton.textContent = "开始提链";
+    linkTypeInput.disabled = false;
   }
 }
 
@@ -230,8 +244,13 @@ function renderJob(job) {
   const card = element("article", "job");
   const head = element("div", "job-head");
   const identity = element("div");
-  identity.append(element("h3", "job-email", job.email || "未知账号"));
-  identity.append(element("div", "job-meta", `${job.id.slice(0, 10)} · ${job.created_at || ""}`));
+  const linkType = (job.result && job.result.link_type) || job.link_type || "upi";
+  identity.append(element("h3", "job-email", job.email || (linkType === "kakao" ? "Kakao 账号" : "未知账号")));
+  identity.append(element(
+    "div",
+    "job-meta",
+    `${linkType === "kakao" ? "韩国 Kakao" : "印度 UPI"} · ${job.id.slice(0, 10)} · ${job.created_at || ""}`,
+  ));
 
   const controls = element("div", "job-head");
   const currentStatus = job.payment && job.status === "running"
@@ -255,7 +274,11 @@ function renderJob(job) {
     const link = safePaymentLink(job.result.payment_link || "");
     const resultActions = element("div", "result-actions");
     if (link) {
-      details.append(element("p", "", "Stripe UPI 支付链接"));
+      details.append(element(
+        "p",
+        "",
+        linkType === "kakao" ? "Kakao Pay / Nicepay 跳转链接" : "Stripe UPI 支付链接",
+      ));
       const anchor = element("a", "payment-link", link);
       anchor.href = link;
       anchor.target = "_blank";
@@ -353,6 +376,7 @@ form.addEventListener("submit", async (event) => {
     cdk: normalizeCdk(data.get("cdk")),
     credential: data.get("credential"),
     email: data.get("email"),
+    link_type: data.get("link_type") || linkTypeInput.value,
     authorized: data.get("authorized") === "on",
   };
   try {

@@ -6,12 +6,12 @@ import threading
 import time
 from pathlib import Path
 
-
 DEFAULT_SETTINGS = {
     "proxy_pool": [],
+    "kakao_proxy_pool": [],
     "login_proxy": "",
     "approve_retries": 30,
-    "approve_concurrency": 1,
+    "approve_concurrency": 4,
     "proxy_from_step": 3,
     "updated_at": 0,
 }
@@ -45,6 +45,7 @@ class SettingsStore:
         approve_retries: int,
         approve_concurrency: int,
         proxy_from_step: int,
+        kakao_proxy_pool: str = "",
     ) -> dict:
         proxies = [
             line.strip()
@@ -53,9 +54,17 @@ class SettingsStore:
         ]
         if len(proxies) > 100:
             raise ValueError("代理数量不能超过 100")
+        kakao_proxies = [
+            line.strip()
+            for line in str(kakao_proxy_pool or "").replace("\r", "").split("\n")
+            if line.strip()
+        ]
+        if len(kakao_proxies) > 100:
+            raise ValueError("韩国代理数量不能超过 100")
         data = self._normalize(
             {
                 "proxy_pool": proxies,
+                "kakao_proxy_pool": kakao_proxies,
                 "login_proxy": str(login_proxy or "").strip(),
                 "approve_retries": approve_retries,
                 "approve_concurrency": approve_concurrency,
@@ -81,6 +90,7 @@ class SettingsStore:
         data = self.get()
         return {
             "proxy_count": len(data["proxy_pool"]),
+            "kakao_proxy_count": len(data["kakao_proxy_pool"]),
             "has_login_proxy": bool(data["login_proxy"]),
             "approve_retries": data["approve_retries"],
             "approve_concurrency": data["approve_concurrency"],
@@ -112,11 +122,17 @@ class SettingsStore:
         proxies = value.get("proxy_pool")
         if not isinstance(proxies, list):
             proxies = []
+        kakao_proxies = value.get("kakao_proxy_pool")
+        if not isinstance(kakao_proxies, list):
+            kakao_proxies = []
         return {
             "proxy_pool": [str(item).strip() for item in proxies if str(item).strip()][:100],
+            "kakao_proxy_pool": [
+                str(item).strip() for item in kakao_proxies if str(item).strip()
+            ][:100],
             "login_proxy": str(value.get("login_proxy") or "").strip(),
             "approve_retries": max(1, min(60, int(value.get("approve_retries", 30)))),
-            "approve_concurrency": max(1, min(20, int(value.get("approve_concurrency", 1)))),
+            "approve_concurrency": max(1, min(20, int(value.get("approve_concurrency", 4)))),
             "proxy_from_step": max(1, min(6, int(value.get("proxy_from_step", 3)))),
             "updated_at": max(0, int(value.get("updated_at", 0))),
         }

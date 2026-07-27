@@ -136,7 +136,11 @@ APPROVE_PROXY_BATCH: int = 10
 # không đổi) — chỉ phần network I/O là parallel. Cảnh báo: nhiều request đồng
 # thời từ cùng account/IP-pool làm CF/Sentinel dễ raise 403/blocked hơn; chỉ
 # hữu ích khi pool đủ lớn & IP sạch (residential IN). Range [1, 20].
-APPROVE_CONCURRENCY: int = 1
+APPROVE_CONCURRENCY: int = 4
+# Both warm-ups are best-effort. Keep their timeout below the actual checkout
+# and approve calls so a slow proxy is rotated instead of stalling every wave.
+CF_WARMUP_TIMEOUT_SECONDS: float = 4.0
+SENTINEL_PING_TIMEOUT_SECONDS: float = 6.0
 # Số lần `result=exception http=200` LIÊN TIẾP để fatal-break approve loop.
 # Default = 0 → DISABLED: backend_exception KHÔNG bao giờ làm dừng sớm; loop
 # chỉ dừng khi `approved=True` hoặc hết `approve_retries` user cấu hình.
@@ -277,6 +281,57 @@ def _mask_email(email: str) -> str:
     if len(local) <= 3:
         return f"{local[:1]}***@{domain}"
     return f"{local[:3]}***{local[-2:]}@{domain}"
+
+
+def _jwt_account_id(access_token: str) -> str:
+    """Read the ChatGPT account id claim without logging token material."""
+    try:
+        parts = str(access_token or "").split(".")
+        if len(parts) < 2:
+            return ""
+        raw = parts[1] + ("=" * (-len(parts[1]) % 4))
+        payload = json.loads(base64.urlsafe_b64decode(raw).decode("utf-8"))
+        auth = payload.get("https://api.openai.com/auth") if isinstance(payload, dict) else {}
+        return str(auth.get("chatgpt_account_id") or "").strip() if isinstance(auth, dict) else ""
+    except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
+        return ""
+
+
+def _chatgpt_request_context(access_token: str, *, locale: str) -> dict[str, str]:
+    """Build the browser identity headers used by the working extractor."""
+    return {
+        "account_id": _jwt_account_id(access_token),
+        "device_id": str(uuid.uuid4()),
+        "sentinel_sid": str(uuid.uuid4()),
+        "oai_session_id": str(uuid.uuid4()),
+        "locale": locale,
+    }
+
+
+def _apply_chatgpt_context(
+    headers: dict[str, str],
+    context: dict[str, str] | None,
+) -> dict[str, str]:
+    """Add non-secret browser identity fields to a ChatGPT API request."""
+    if not context:
+        return headers
+    account_id = str(context.get("account_id") or "").strip()
+    device_id = str(context.get("device_id") or "").strip()
+    if account_id:
+        headers["ChatGPT-Account-Id"] = account_id
+    if device_id:
+        headers["oai-device-id"] = device_id
+        headers["cookie"] = f"oai-did={device_id}"
+    headers.update({
+        "oai-session-id": str(context.get("oai_session_id") or uuid.uuid4()),
+        "oai-client-version": "prod-db390ebea64862bf1899c420a4c736e0cf639747",
+        "oai-client-build-number": "7904904",
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+    })
+    headers["OAI-Language"] = str(context.get("locale") or "en-IN")
+    return headers
 
 
 def _mask_proxy(proxy: str | None) -> str:
@@ -934,6 +989,17 @@ class _RotatingSession:
     async def __aexit__(self, exc_type, exc, tb) -> None:
         await self._close_inner(exc_type, exc, tb)
 
+    async def reopen(self) -> None:
+        """Drop the current cookie/TLS state and start a fresh primary session.
+
+        The promo update is sent through a different regional proxy.  A fresh
+        session before Stripe init mirrors the browser handoff used by the
+        working extractor and prevents Stripe from reusing pre-promo state.
+        """
+        self._idx = 0
+        await self._close_inner()
+        await self._open_inner(self._chain[0])
+
     async def _reset_to_primary(self) -> None:
         """Recreate inner session về fingerprint ưu tiên (chain[0]).
 
@@ -1025,6 +1091,7 @@ async def _create_chatgpt_checkout(
     access_token: str,
     log: LogFn,
     proxies: dict[str, str] | None,
+    context: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     from .pay_upi_http import _CHATGPT_CHECKOUT_URL, _USER_AGENT, PayUpiError
     from .user_agent_profile import (
@@ -1059,6 +1126,7 @@ async def _create_chatgpt_checkout(
         "x-openai-target-route": "/backend-api/payments/checkout",
         "OAI-Language": "en-IN",
     }
+    _apply_chatgpt_context(headers, context)
     resp = await sess.post(
         _CHATGPT_CHECKOUT_URL, headers=headers, json=body, timeout=30, proxies=proxies,
     )
@@ -1077,8 +1145,10 @@ async def _update_chatgpt_checkout(
     *,
     access_token: str,
     session_id: str,
+    processor_entity: str = "openai_ie",
     log: LogFn,
     proxies: dict[str, str] | None,
+    context: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     from .pay_upi_http import _USER_AGENT, PayUpiError
     from .user_agent_profile import (
@@ -1091,16 +1161,21 @@ async def _update_chatgpt_checkout(
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
         "Accept": "*/*",
+        "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.8",
         "Origin": "https://chatgpt.com",
-        "Referer": f"https://chatgpt.com/checkout/openai_llc/{session_id}",
+        "Referer": f"https://chatgpt.com/checkout/{processor_entity}/{session_id}",
         "User-Agent": _USER_AGENT,
         "sec-ch-ua": _SEC_CH_UA,
         "sec-ch-ua-mobile": _SEC_CH_UA_MOBILE,
         "sec-ch-ua-platform": _SEC_CH_UA_PLATFORM,
+        "x-openai-target-path": "/backend-api/payments/checkout/update",
+        "x-openai-target-route": "/backend-api/payments/checkout/update",
+        "OAI-Language": "vi-VN",
     }
+    _apply_chatgpt_context(headers, context)
     payload = {
         "checkout_session_id": session_id,
-        "processor_entity": "openai_llc",
+        "processor_entity": processor_entity,
         "plan_name": "chatgptplusplan",
         "price_interval": "month",
         "seat_quantity": 1,
@@ -1118,7 +1193,159 @@ async def _update_chatgpt_checkout(
     )
     if resp.status_code != 200:
         raise PayUpiError(f"checkout/update HTTP {resp.status_code}: {resp.text[:300]}")
-    return resp.json()
+    data = resp.json()
+    if isinstance(data, dict) and data.get("success") is False:
+        raise PayUpiError(
+            f"checkout/update rejected: keys={list(data)[:20]}"
+        )
+    return data
+
+
+async def _apply_india_tax_context(
+    sess: Any,
+    *,
+    access_token: str,
+    session_id: str,
+    publishable_key: str,
+    processor_entity: str,
+    email: str,
+    profile: dict[str, Any],
+    proxies: dict[str, str] | None,
+    context: dict[str, str] | None = None,
+) -> None:
+    """Persist the India billing/tax context before Stripe payment creation."""
+    from .pay_upi_http import _STRIPE_PAGE_URL, _STRIPE_VERSION, _USER_AGENT, _to_form
+    from .user_agent_profile import (
+        SEC_CH_UA as _SEC_CH_UA,
+        SEC_CH_UA_MOBILE as _SEC_CH_UA_MOBILE,
+        SEC_CH_UA_PLATFORM as _SEC_CH_UA_PLATFORM,
+    )
+
+    chatgpt_context = context or _chatgpt_request_context(access_token, locale="en-IN")
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "Accept": "*/*",
+        "Accept-Language": "en-IN,en;q=0.9",
+        "Origin": "https://chatgpt.com",
+        "Referer": f"https://chatgpt.com/checkout/{processor_entity}/{session_id}",
+        "User-Agent": _USER_AGENT,
+        "sec-ch-ua": _SEC_CH_UA,
+        "sec-ch-ua-mobile": _SEC_CH_UA_MOBILE,
+        "sec-ch-ua-platform": _SEC_CH_UA_PLATFORM,
+        "x-openai-target-path": "/backend-api/payments/checkout/taxes",
+        "x-openai-target-route": "/backend-api/payments/checkout/taxes",
+        "OAI-Language": "en-IN",
+    }
+    _apply_chatgpt_context(headers, chatgpt_context)
+    tax_body = {
+        "checkout_session_id": session_id,
+        "checkout_email": email,
+        "billing_country": "IN",
+        "billing_name": profile["name"],
+        "currency": "INR",
+        "tax_id": None,
+        "processor_entity": processor_entity,
+        "billing_address": {
+            "line1": profile["address_line1"],
+            "city": profile["city"],
+            "state": profile["state"],
+            "country": "IN",
+            "postal_code": profile["postal_code"],
+        },
+    }
+    tax_resp = await sess.post(
+        "https://chatgpt.com/backend-api/payments/checkout/taxes",
+        headers=headers,
+        json=tax_body,
+        timeout=30,
+        proxies=proxies,
+    )
+    if tax_resp.status_code >= 400:
+        raise RuntimeError(f"checkout/taxes HTTP {tax_resp.status_code}")
+
+    stripe_headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+        "Origin": "https://js.stripe.com",
+        "Referer": "https://js.stripe.com/",
+        "User-Agent": _USER_AGENT,
+        "sec-ch-ua": _SEC_CH_UA,
+        "sec-ch-ua-mobile": _SEC_CH_UA_MOBILE,
+        "sec-ch-ua-platform": _SEC_CH_UA_PLATFORM,
+        "Accept-Language": "en-IN,en;q=0.9",
+    }
+    tax_form = _to_form({
+        "eid": "NA",
+        "tax_region": {
+            "country": "IN",
+            "postal_code": profile["postal_code"],
+            "line1": profile["address_line1"],
+            "city": profile["city"],
+            "state": profile["state"],
+        },
+        "key": publishable_key,
+        "_stripe_version": _STRIPE_VERSION,
+    })
+    stripe_resp = await sess.post(
+        _STRIPE_PAGE_URL.format(id=session_id),
+        headers=stripe_headers,
+        data=tax_form,
+        timeout=30,
+        proxies=proxies,
+    )
+    if stripe_resp.status_code >= 400:
+        raise RuntimeError(f"stripe tax region HTTP {stripe_resp.status_code}")
+
+
+async def _check_promo_coupon(
+    sess: Any,
+    *,
+    access_token: str,
+    proxy: str | None,
+    context: dict[str, str] | None,
+    log: LogFn,
+) -> None:
+    """Prime the promo eligibility endpoint before creating checkout."""
+    from .pay_upi_http import _USER_AGENT
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "*/*",
+        "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.8",
+        "Origin": "https://chatgpt.com",
+        "Referer": "https://chatgpt.com/?promo_campaign=plus-1-month-free",
+        "User-Agent": _USER_AGENT,
+        "x-openai-target-path": "/backend-api/promo_campaign/check_coupon",
+        "x-openai-target-route": "/backend-api/promo_campaign/check_coupon",
+        "OAI-Language": "vi-VN",
+    }
+    _apply_chatgpt_context(
+        headers,
+        context or _chatgpt_request_context(access_token, locale="vi-VN"),
+    )
+    resp = await sess.get(
+        "https://chatgpt.com/backend-api/promo_campaign/check_coupon",
+        params={
+            "coupon": "plus-1-month-free",
+            "is_coupon_from_query_param": "true",
+        },
+        headers=headers,
+        timeout=30,
+        proxies=_proxy_dict(proxy),
+    )
+    state = "-"
+    if resp.status_code == 200:
+        try:
+            payload = resp.json()
+            state = str(payload.get("state") or "-") if isinstance(payload, dict) else "-"
+        except Exception:
+            state = "invalid_json"
+    log(_fmt_step(
+        "2/6", "promo precheck",
+        "ok" if resp.status_code == 200 else "warn",
+        f"http={resp.status_code} state={state}",
+    ))
 
 
 async def _create_chatgpt_checkout_with_proxy_split(
@@ -1128,6 +1355,7 @@ async def _create_chatgpt_checkout_with_proxy_split(
     upi_proxy: str | None,
     promo_proxy: str | None,
     log: LogFn,
+    context: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Create the Checkout in the UPI region, then apply promo in login region.
 
@@ -1138,22 +1366,111 @@ async def _create_chatgpt_checkout_with_proxy_split(
     challenge — mirrors the approve-loop warm-up.
     """
     await _warm_cf_cookie(sess, proxies=_proxy_dict(upi_proxy), log=log, step="2/6")
+    checkout_context = context or _chatgpt_request_context(access_token, locale="en-IN")
+    await _check_promo_coupon(
+        sess,
+        access_token=access_token,
+        proxy=promo_proxy or upi_proxy,
+        context=checkout_context,
+        log=log,
+    )
     checkout = await _create_chatgpt_checkout(
         sess,
         access_token=access_token,
         log=log,
         proxies=_proxy_dict(upi_proxy),
+        context=checkout_context,
     )
+    processor_entity = str(
+        checkout.get("processor_entity")
+        or checkout.get("processorEntity")
+        or "openai_ie"
+    ).strip() or "openai_ie"
     if promo_proxy is not None:
+        # The checkout must be initialized once in the provider region before
+        # the regional promo mutation.  Without this bootstrap, the update
+        # endpoint can return success while Stripe keeps the original amount.
+        from .pay_upi_http import PayUpiError, _stripe_init
+        try:
+            bootstrap = await _stripe_init(
+                sess,
+                session_id=checkout["checkout_session_id"],
+                publishable_key=checkout["publishable_key"],
+                stripe_js_id=str(uuid.uuid4()),
+                log=_silent,
+                proxies=_proxy_dict(upi_proxy),
+            )
+            log(_fmt_step(
+                "2/6", "promo bootstrap", "ok",
+                f"amount={_extract_amount(bootstrap)} proxy=upi",
+            ))
+        except Exception as exc:  # noqa: BLE001
+            raise PayUpiError(
+                f"promo bootstrap Stripe init failed: {type(exc).__name__}: {exc}"
+            ) from exc
         if promo_proxy != upi_proxy:
             await _warm_cf_cookie(sess, proxies=_proxy_dict(promo_proxy), log=log, step="2/6")
-        await _update_chatgpt_checkout(
+        promo_data = await _update_chatgpt_checkout(
             sess,
             access_token=access_token,
             session_id=checkout["checkout_session_id"],
+            processor_entity=processor_entity,
             log=log,
             proxies=_proxy_dict(promo_proxy),
+            context=_chatgpt_request_context(access_token, locale="vi-VN"),
         )
+        # Keep the diagnostic useful without exposing response bodies, tokens,
+        # cookies, or payment identifiers in the job stream.
+        if isinstance(promo_data, dict):
+            keys = ",".join(str(key) for key in list(promo_data)[:12]) or "-"
+            updated_session = promo_data.get("checkout_session")
+            updated_session_keys = "-"
+            updated_amounts: list[str] = []
+            session_changed = False
+            publishable_changed = False
+            if isinstance(updated_session, dict):
+                updated_session_keys = ",".join(
+                    str(key) for key in list(updated_session)[:16]
+                ) or "-"
+                for key in ("amount", "amount_total", "amount_due", "total", "due"):
+                    value = updated_session.get(key)
+                    if isinstance(value, int):
+                        updated_amounts.append(f"{key}={value}")
+                old_session_id = str(checkout.get("checkout_session_id") or "")
+                old_publishable_key = str(checkout.get("publishable_key") or "")
+                for key in (
+                    "checkout_session_id",
+                    "publishable_key",
+                    "processor_entity",
+                    "processorEntity",
+                    "checkout_ui_mode",
+                    "requires_manual_approval",
+                    "status",
+                    "payment_status",
+                    "checkout_provider",
+                ):
+                    value = updated_session.get(key)
+                    if value:
+                        checkout[key] = value
+                session_changed = (
+                    bool(checkout.get("checkout_session_id"))
+                    and str(checkout.get("checkout_session_id")) != old_session_id
+                )
+                publishable_changed = (
+                    bool(checkout.get("publishable_key"))
+                    and str(checkout.get("publishable_key")) != old_publishable_key
+                )
+            log(_fmt_step(
+                "2/6", "promo update", "ok",
+                f"processor={processor_entity} success={promo_data.get('success')} "
+                f"account_id={'present' if checkout_context.get('account_id') else 'missing'} "
+                f"keys={keys} checkout_session_keys={updated_session_keys} "
+                f"amounts={','.join(updated_amounts) or '-'} "
+                f"manual={checkout.get('requires_manual_approval')} "
+                f"status={checkout.get('status') or '-'} "
+                f"payment_status={checkout.get('payment_status') or '-'} "
+                f"session_changed={session_changed} publishable_changed={publishable_changed}",
+            ))
     return checkout
 
 
@@ -1614,8 +1931,12 @@ async def _chatgpt_approve_checkout(
     *,
     access_token: str,
     session_id: str,
+    processor_entity: str = "openai_ie",
     log: LogFn,
     proxies: dict[str, str] | None,
+    context: dict[str, str] | None = None,
+    sentinel_token: str | None = None,
+    sentinel_so_token: str | None = None,
 ) -> dict[str, Any]:
     from .pay_upi_http import _CHATGPT_APPROVE_URL, _USER_AGENT
     from .user_agent_profile import (
@@ -1624,14 +1945,14 @@ async def _chatgpt_approve_checkout(
         SEC_CH_UA_PLATFORM as _SEC_CH_UA_PLATFORM,
     )
 
-    body = {"checkout_session_id": session_id, "processor_entity": "openai_llc"}
+    body = {"checkout_session_id": session_id, "processor_entity": processor_entity}
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
         "Accept": "*/*",
         "Accept-Language": "en-IN,en;q=0.9",
         "Origin": "https://chatgpt.com",
-        "Referer": f"https://chatgpt.com/checkout/openai_llc/{session_id}",
+        "Referer": f"https://chatgpt.com/checkout/{processor_entity}/{session_id}",
         "User-Agent": _USER_AGENT,
         "sec-ch-ua": _SEC_CH_UA,
         "sec-ch-ua-mobile": _SEC_CH_UA_MOBILE,
@@ -1640,6 +1961,14 @@ async def _chatgpt_approve_checkout(
         "x-openai-target-route": "/backend-api/payments/checkout/approve",
         "OAI-Language": "en-IN",
     }
+    _apply_chatgpt_context(
+        headers,
+        context or _chatgpt_request_context(access_token, locale="en-IN"),
+    )
+    if sentinel_token:
+        headers["openai-sentinel-token"] = sentinel_token
+    if sentinel_so_token:
+        headers["openai-sentinel-so-token"] = sentinel_so_token
     resp = await sess.post(
         _CHATGPT_APPROVE_URL, headers=headers, json=body, timeout=30, proxies=proxies,
     )
@@ -1659,6 +1988,102 @@ async def _chatgpt_approve_checkout(
         ),
         "data": data if resp.status_code == 200 else None,
     }
+
+
+async def _build_approve_sentinel(
+    sess: Any,
+    *,
+    access_token: str,
+    proxy: str | None,
+    context: dict[str, str],
+    session_id: str,
+    processor_entity: str,
+    log: LogFn,
+) -> tuple[str | None, str | None]:
+    """Request and solve the official Sentinel challenge for checkout approve."""
+    from .pay_upi_http import _USER_AGENT
+    from .sentinel_support import (
+        build_sentinel_request_body,
+        generate_requirements_token,
+    )
+    from .sentinel_runner_support import generate_sentinel_token
+
+    device_id = str(context.get("device_id") or "").strip()
+    if not device_id:
+        raise RuntimeError("missing device_id for sentinel")
+    sentinel_sid = str(context.get("sentinel_sid") or uuid.uuid4()).strip()
+    profile = {
+        "user_agent": _USER_AGENT,
+        "navigator_language": "en-IN",
+        "navigator_languages": ["en-IN", "en"],
+        "hardware_concurrency": 8,
+        "device_memory": 8,
+        "timezone_iana": "Asia/Kolkata",
+        "timezone_name": "India Standard Time",
+        "timezone_offset_minutes": 330,
+        "window_feature_flags": {"requestIdleCallback": 0},
+        "sec_ch_ua": '"Chromium";v="145", "Google Chrome";v="145", "Not_A Brand";v="24"',
+        "sec_ch_ua_platform": '"Windows"',
+        "sec_ch_ua_platform_version": '"15.0.0"',
+        "sec_ch_ua_arch": '"x86"',
+        "sec_ch_ua_bitness": '"64"',
+    }
+    sentinel_flow = "checkout_session_approval"
+    proof = generate_requirements_token(sentinel_sid, profile=profile)
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "*/*",
+        "Content-Type": "text/plain;charset=UTF-8",
+        "Accept-Language": "en-IN,en;q=0.9",
+        "Origin": "https://chatgpt.com",
+        "Referer": "https://chatgpt.com/",
+        "User-Agent": _USER_AGENT,
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+    }
+    _apply_chatgpt_context(headers, context)
+    resp = await sess.post(
+        "https://chatgpt.com/backend-api/sentinel/req",
+        headers=headers,
+        data=build_sentinel_request_body(proof, device_id, sentinel_flow),
+        timeout=30,
+        proxies=_proxy_dict(proxy),
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"sentinel challenge HTTP {resp.status_code}")
+    challenge = resp.json()
+    token = await asyncio.to_thread(
+        generate_sentinel_token,
+        challenge=challenge,
+        flow=sentinel_flow,
+        device_id=device_id,
+        user_agent=_USER_AGENT,
+        page_url=f"https://chatgpt.com/checkout/{processor_entity}/{session_id}",
+        browser_profile=profile,
+        sentinel_sid=sentinel_sid,
+        cookie=f"oai-did={device_id}",
+    )
+    so_token = None
+    try:
+        parsed = json.loads(token)
+        if parsed.get("so"):
+            so_token = json.dumps(
+                {
+                    "so": parsed["so"],
+                    "c": parsed.get("c", challenge.get("token", "")),
+                    "id": device_id,
+                    "flow": sentinel_flow,
+                },
+                separators=(",", ":"),
+            )
+    except (TypeError, ValueError):
+        pass
+    log(_fmt_step(
+        "6/6", "approve sentinel", "ok",
+        f"attached len={len(token)} so={'yes' if so_token else 'no'}",
+    ))
+    return token, so_token
 
 
 # [FIX-CF-WARMUP-2026-06-20] — GET chatgpt.com để CF set __cf_bm trước
@@ -1704,7 +2129,10 @@ async def _warm_cf_cookie(
     }
     try:
         resp = await sess.get(
-            "https://chatgpt.com/", headers=headers, timeout=15, proxies=proxies,
+            "https://chatgpt.com/",
+            headers=headers,
+            timeout=CF_WARMUP_TIMEOUT_SECONDS,
+            proxies=proxies,
         )
         status = resp.status_code
     except Exception as exc:  # noqa: BLE001
@@ -1721,10 +2149,56 @@ async def _warm_cf_cookie(
     ))
 
 
+async def _warm_sentinel_ping(
+    sess: Any,
+    *,
+    access_token: str,
+    proxy: str | None,
+    log: LogFn,
+    context: dict[str, str] | None = None,
+) -> None:
+    """Prime ChatGPT's checkout risk context immediately before approve."""
+    from .pay_upi_http import _USER_AGENT
+
+    context = context or _chatgpt_request_context(access_token, locale="en-IN")
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "Accept": "*/*",
+        "Accept-Language": "en-IN,en;q=0.9,hi;q=0.8",
+        "Origin": "https://chatgpt.com",
+        "Referer": "https://chatgpt.com/",
+        "User-Agent": _USER_AGENT,
+        "x-openai-target-path": "/backend-api/sentinel/ping",
+        "x-openai-target-route": "/backend-api/sentinel/ping",
+        "OAI-Language": "en-IN",
+    }
+    _apply_chatgpt_context(headers, context)
+    try:
+        resp = await sess.post(
+            "https://chatgpt.com/backend-api/sentinel/ping",
+            headers=headers,
+            json={},
+            timeout=SENTINEL_PING_TIMEOUT_SECONDS,
+            proxies=_proxy_dict(proxy),
+        )
+        log(_fmt_step(
+            "6/6", "sentinel ping",
+            "ok" if resp.status_code == 200 else "warn",
+            f"http={resp.status_code} proxy={_mask_proxy(proxy)}",
+        ))
+    except Exception as exc:  # noqa: BLE001
+        log(_fmt_step(
+            "6/6", "sentinel ping", "warn",
+            f"{type(exc).__name__}: {str(exc)[:100]}",
+        ))
+
+
 async def _approve_once_isolated(
     *,
     access_token: str,
     session_id: str,
+    processor_entity: str,
     raw_proxy: str | None,
     warm: bool,
 ) -> dict[str, Any]:
@@ -1734,8 +2208,9 @@ async def _approve_once_isolated(
     Vì ``_RotatingSession`` có thể recreate ``_inner`` giữa chừng khi gặp lỗi
     TLS, chạy nhiều request song song trên CÙNG 1 session sẽ race (task A đóng
     session khi task B đang dùng). Mỗi wave-slot vì vậy mở session riêng: fresh
-    BoringSSL context + cookie jar riêng cho ``__cf_bm`` (warm CF trước approve),
-    triệt tiêu chia sẻ state giữa các attempt song song.
+    BoringSSL context + cookie jar riêng. Sentinel ping/request already primes
+    the same ChatGPT origin, so callers may skip the redundant homepage warm-up
+    without skipping Sentinel or approve.
 
     Trả về dict cùng shape với ``_chatgpt_approve_checkout`` + key phụ
     ``_materialized_proxy`` (concrete URL để caller mask/log). KHÔNG raise —
@@ -1748,12 +2223,33 @@ async def _approve_once_isolated(
         async with _RotatingSession(_IMPERSONATE_CHAIN, log=_silent) as s:
             if warm:
                 await _warm_cf_cookie(s, proxies=proxies, log=_silent)
+            context = _chatgpt_request_context(access_token, locale="en-IN")
+            await _warm_sentinel_ping(
+                s,
+                access_token=access_token,
+                proxy=materialized,
+                log=_silent,
+                context=context,
+            )
+            sentinel_token, sentinel_so_token = await _build_approve_sentinel(
+                s,
+                access_token=access_token,
+                proxy=materialized,
+                context=context,
+                session_id=session_id,
+                processor_entity=processor_entity,
+                log=_silent,
+            )
             attempt = await _chatgpt_approve_checkout(
                 s,
                 access_token=access_token,
                 session_id=session_id,
+                processor_entity=processor_entity,
                 log=_silent,
                 proxies=proxies,
+                context=context,
+                sentinel_token=sentinel_token,
+                sentinel_so_token=sentinel_so_token,
             )
     except Exception as exc:  # noqa: BLE001
         attempt = {
@@ -2295,7 +2791,7 @@ async def run_upi_qr_probe(
                     access_token=access_token,
                     upi_proxy=first_proxy,
                     promo_proxy=effective_login_proxy,
-                    log=_silent,
+                    log=_safe_log,
                 )
             except Exception as exc:  # noqa: BLE001
                 if _is_user_already_paid({"error": str(exc)}):
@@ -2323,6 +2819,28 @@ async def run_upi_qr_probe(
             session_id = checkout["checkout_session_id"]
             return_url = _stripe_return_url(session_id)
             publishable_key = checkout["publishable_key"]
+            processor_entity = str(
+                checkout.get("processor_entity")
+                or checkout.get("processorEntity")
+                or "openai_ie"
+            ).strip() or "openai_ie"
+            if effective_login_proxy and hasattr(sess, "reopen"):
+                await sess.reopen()
+                await _warm_cf_cookie(
+                    sess,
+                    proxies=_proxy_for_step(
+                        first_proxy,
+                        from_step=proxy_from_step,
+                        step=3,
+                    ),
+                    log=_safe_log,
+                    step="3/6",
+                )
+                _safe_log(_fmt_step(
+                    "upi", "region handoff", "ok",
+                    "fresh primary session after promo update",
+                ))
+            phase_context = _chatgpt_request_context(access_token, locale="en-IN")
             _safe_log(_fmt_step(
                 f"2/6{phase_tag}", "checkout", "ok",
                 f"cs={_short(session_id, 14)}  ui={checkout.get('checkout_ui_mode') or '-'}  "
@@ -2373,6 +2891,51 @@ async def run_upi_qr_probe(
                 fatal_approve_error = (
                     f"phase {phase_idx} no free offer (amount={amount})"
                 )
+                break
+
+            # Persist billing/tax region before creating the payment method.
+            # The approve endpoint expects the same India context that Stripe
+            # used to price the free checkout.
+            try:
+                await _apply_india_tax_context(
+                    sess,
+                    access_token=access_token,
+                    session_id=session_id,
+                    publishable_key=publishable_key,
+                    processor_entity=processor_entity,
+                    email=user_email,
+                    profile=profile,
+                    proxies=_proxy_for_step(
+                        first_proxy, from_step=proxy_from_step, step=5,
+                    ),
+                    context=phase_context,
+                )
+                init_data = await _stripe_init(
+                    sess,
+                    session_id=session_id,
+                    publishable_key=publishable_key,
+                    stripe_js_id=stripe_js_id,
+                    log=_silent,
+                    proxies=_proxy_for_step(
+                        first_proxy, from_step=proxy_from_step, step=3,
+                    ),
+                )
+                amount = _extract_amount(init_data)
+                _safe_log(_fmt_step(
+                    f"3/6{phase_tag}", "tax refresh", "ok",
+                    f"country=IN amount={amount} {_step_proxy_tag(3)}",
+                ))
+            except Exception as exc:  # noqa: BLE001
+                if restart_count == 0:
+                    raise
+                fatal_approve_error = (
+                    f"phase {phase_idx} tax context fail: "
+                    f"{type(exc).__name__}: {str(exc)[:200]}"
+                )
+                _safe_log(_fmt_step(
+                    f"3/6{phase_tag}", "tax refresh", "fail",
+                    fatal_approve_error[:160],
+                ))
                 break
 
             # Step 4 — elements/sessions.
@@ -2582,6 +3145,7 @@ async def run_upi_qr_probe(
             # batch, SID/IP tươi sang batch mới. Reset mỗi phase restart →
             # phase mới spawn IP tươi (không reuse cache cũ).
             _approve_mat_cache: dict[int, str | None] = {}
+            _approve_context_cache: dict[int, dict[str, str]] = {}
 
             async def _register_and_classify(
                 approve_attempt: dict[str, Any],
@@ -2620,6 +3184,30 @@ async def run_upi_qr_probe(
                     result=approve_attempt.get("result") or approve_attempt.get("error_type"),
                     proxy_mask=_mask_proxy(approve_proxy),
                 ))
+                response_error = approve_attempt.get("error")
+                response_keys = approve_attempt.get("keys") or []
+                response_result = approve_attempt.get("result")
+                if response_error:
+                    _safe_log(_fmt_step(
+                        "6/6", "approve response", "warn",
+                        f"keys={','.join(str(key) for key in response_keys[:12]) or '-'} "
+                        f"error={str(response_error)[:240] if response_error else '-'}",
+                    ))
+                elif response_result:
+                    # A clean HTTP 200 with a business result is not a
+                    # transport/API error. Keep the result visible without
+                    # painting every blocked/approved response as a warning.
+                    result_status = "ok" if response_result == "approved" else "info"
+                    _safe_log(_fmt_step(
+                        "6/6", "approve response", result_status,
+                        f"http={approve_attempt.get('http_status') or '-'} "
+                        f"result={response_result}",
+                    ))
+                elif response_keys:
+                    _safe_log(_fmt_step(
+                        "6/6", "approve response", "warn",
+                        f"keys={','.join(str(key) for key in response_keys[:12])}",
+                    ))
                 if approve_attempt.get("ok"):
                     approved = True
                     return "stop"
@@ -2775,14 +3363,49 @@ async def run_upi_qr_probe(
                             proxies=_proxy_dict(_approve_mat_cache[batch_idx]),
                             log=_safe_log,
                         )
+                        await _warm_sentinel_ping(
+                            sess,
+                            access_token=access_token,
+                            proxy=_approve_mat_cache[batch_idx],
+                            log=_safe_log,
+                            context=_approve_context_cache.setdefault(
+                                batch_idx,
+                                phase_context,
+                            ),
+                        )
                     approve_proxy = _approve_mat_cache[batch_idx]  # concrete URL (no {SID})
+                    approve_context = _approve_context_cache.setdefault(
+                        batch_idx,
+                        phase_context,
+                    )
+                    try:
+                        sentinel_token, sentinel_so_token = await _build_approve_sentinel(
+                            sess,
+                            access_token=access_token,
+                            proxy=approve_proxy,
+                            context=approve_context,
+                            session_id=session_id,
+                            processor_entity=processor_entity,
+                            log=_safe_log,
+                        )
+                    except Exception as exc:  # noqa: BLE001 — approve remains best-effort
+                        sentinel_token = None
+                        sentinel_so_token = None
+                        _safe_log(_fmt_step(
+                            "6/6", "approve sentinel", "warn",
+                            f"{type(exc).__name__}: {str(exc)[:120]}",
+                        ))
                     try:
                         approve_attempt = await _chatgpt_approve_checkout(
                             sess,
                             access_token=access_token,
                             session_id=session_id,
+                            processor_entity=processor_entity,
                             log=_silent,
                             proxies=_proxy_dict(approve_proxy),
+                            context=approve_context,
+                            sentinel_token=sentinel_token,
+                            sentinel_so_token=sentinel_so_token,
                         )
                     except Exception as exc:  # noqa: BLE001
                         approve_attempt = {
@@ -2834,8 +3457,12 @@ async def run_upi_qr_probe(
                         _approve_once_isolated(
                             access_token=access_token,
                             session_id=session_id,
+                            processor_entity=processor_entity,
                             raw_proxy=raw,
-                            warm=True,
+                            # Sentinel ping/request already primes the same
+                            # proxy session. A homepage request can add one
+                            # timeout to every concurrent wave.
+                            warm=False,
                         )
                         for (_idx, raw) in slots
                     ])
@@ -3002,10 +3629,17 @@ async def run_upi_qr_probe(
     elif qr_path or already_paid_detected:
         error_msg = None
     elif not final_approved:
-        error_msg = (
-            f"approve did not succeed after {len(approve_attempts)} attempts "
-            f"(retries={approve_retries})"
-        )
+        if checkout.get("requires_manual_approval") is True:
+            error_msg = (
+                "checkout requires manual approval; backend returned "
+                f"result=blocked after {len(approve_attempts)} attempts "
+                f"(retries={approve_retries})"
+            )
+        else:
+            error_msg = (
+                f"approve did not succeed after {len(approve_attempts)} attempts "
+                f"(retries={approve_retries})"
+            )
     elif not qr_path and not already_paid_detected:
         error_msg = qr_reason or "no QR generated"
     else:

@@ -86,6 +86,9 @@ input, textarea, select {
 }
 textarea { resize: vertical; min-height: 48px; line-height: 1.55; }
 input:focus, textarea:focus, select:focus { border-color: #3d9f7c; box-shadow: 0 0 0 3px rgba(88, 213, 165, 0.1); }
+#job-form > input + label,
+#job-form > select + label,
+#settings-form > textarea + label { margin-top: 22px; }
 
 .hint { margin: 8px 0 22px; color: var(--muted); font-size: 12px; }
 .cdk-panel { margin-bottom: 24px; padding: 18px; border: 1px solid #2d594b; border-radius: 14px; background: rgba(29, 91, 70, 0.11); }
@@ -102,7 +105,7 @@ summary { padding: 16px 0; cursor: pointer; color: #c9d2df; font-weight: 600; }
 .advanced { padding: 0 0 20px; }
 .advanced .grid { margin-top: 18px; }
 
-.authorization { display: flex; align-items: flex-start; gap: 10px; color: var(--muted); font-weight: 400; line-height: 1.5; }
+.authorization { display: flex; align-items: flex-start; gap: 10px; margin-top: 18px; color: var(--muted); font-weight: 400; line-height: 1.5; }
 .authorization input { width: 18px; height: 18px; margin-top: 2px; accent-color: var(--accent); }
 
 .actions { margin-top: 22px; justify-content: flex-start; }

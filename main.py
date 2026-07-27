@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
+import json
 import os
 import re
 import secrets
@@ -8,16 +11,21 @@ from pathlib import Path
 from uuid import uuid4
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from upi_link import __version__
 from upi_link.auth import AdminAuth, LoginRateLimiter
-from upi_link.cdk import CdkError, CdkStore
+from upi_link.cdk import CdkError, CdkStore, normalize_code
 from upi_link.credentials import Credential, CredentialError, parse_credential
 from upi_link.extractor import ExtractionOptions
-from upi_link.foarge import FoargeClient, FoargeClientPool, FoargeError, run_foarge_payment
+from upi_link.foarge import (
+    FoargeClient,
+    FoargeClientPool,
+    FoargeError,
+    run_foarge_payment,
+)
 from upi_link.foarge_pool import FoargeCdkStore, FoargePoolError
 from upi_link.jobs import Job, JobManager, Runner
 from upi_link.schemas import (
@@ -26,12 +34,12 @@ from upi_link.schemas import (
     AdminSettingsRequest,
     CdkRevokeRequest,
     CdkVerifyRequest,
+    CompatibilityExtractRequest,
     CreateBatchJobRequest,
     CreateCdkRequest,
     CreateJobRequest,
 )
 from upi_link.settings import SettingsStore
-
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -39,11 +47,15 @@ RUNTIME_DIR = Path(os.getenv("UPI_RUNTIME_DIR", str(BASE_DIR / "runtime"))).reso
 ADMIN_COOKIE = "upi_admin_session"
 CLIENT_COOKIE = "upi_client_session"
 _CLIENT_ID_RE = re.compile(r"^[a-f0-9]{64}$")
+_JOB_ID_RE = re.compile(r"^[a-f0-9]{32}$")
+_COMPAT_SIGNING_SECRET = (
+    os.getenv("UPI_SESSION_SECRET", "").encode("utf-8") or secrets.token_bytes(32)
+)
 
 
 def _max_concurrency() -> int:
     try:
-        return max(1, min(4, int(os.getenv("UPI_MAX_CONCURRENCY", "1"))))
+        return max(1, min(20, int(os.getenv("UPI_MAX_CONCURRENCY", "1"))))
     except ValueError:
         return 1
 
@@ -106,10 +118,12 @@ def _require_admin(request: Request) -> None:
         raise HTTPException(401, "管理员登录已失效")
 
 
-def _options() -> ExtractionOptions:
+def _options(link_type: str = "upi") -> ExtractionOptions:
     config = settings.get()
     return ExtractionOptions(
+        link_type=link_type,
         proxy_pool=tuple(config["proxy_pool"]),
+        kakao_proxy_pool=tuple(config["kakao_proxy_pool"]),
         login_proxy=config["login_proxy"] or None,
         approve_retries=config["approve_retries"],
         approve_concurrency=config["approve_concurrency"],
@@ -140,6 +154,66 @@ def _public_cdk_status(data: dict) -> dict:
         "kind",
     )
     return {key: data.get(key) for key in allowed if key in data}
+
+
+def _compat_owner_id(cdk: str) -> str:
+    normalized = normalize_code(cdk)
+    return hashlib.sha256(f"registration-compat:{normalized}".encode()).hexdigest()
+
+
+def _compat_qr_access(job_id: str) -> str:
+    return hmac.new(
+        _COMPAT_SIGNING_SECRET,
+        f"registration-compat-qr:{job_id}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _compat_qr_path(job_id: str) -> Path | None:
+    if not _JOB_ID_RE.fullmatch(job_id):
+        return None
+    path = (jobs.qr_root / f"{job_id}.png").resolve()
+    if path.parent != jobs.qr_root:
+        return None
+    return path if path.is_file() else None
+
+
+def _compat_result(
+    snapshot: dict,
+    *,
+    request: Request,
+    cdk: str,
+) -> dict:
+    raw = dict(snapshot.get("result") or {})
+    link_type = str(raw.get("link_type") or snapshot.get("link_type") or "upi")
+    job_id = str(snapshot.get("id") or "")
+    payment_link = str(raw.get("payment_link") or "")
+    qr_url = ""
+    if raw.get("qr_url") and _JOB_ID_RE.fullmatch(job_id):
+        qr_url = (
+            f"{request.url_for('get_qr', job_id=job_id)}"
+            f"?access={_compat_qr_access(job_id)}"
+        )
+    cdk_status = cdks.verify(cdk)
+    return {
+        "long_url": payment_link,
+        "copy_paste": payment_link,
+        "image_url_png": qr_url,
+        "image_url_svg": "",
+        "payment_method": "Kakao Pay" if link_type == "kakao" else "UPI",
+        "payment_link_type": link_type,
+        "expires_at": raw.get("qr_expires_at") or raw.get("expires_at"),
+        "cdk_remaining": cdk_status.get("remaining_uses"),
+        "email": raw.get("email") or snapshot.get("email"),
+        "amount": raw.get("amount"),
+        "already_paid": bool(raw.get("already_paid")),
+        "elapsed_seconds": raw.get("elapsed_seconds"),
+    }
+
+
+def _sse_event(event: str, payload: dict) -> str:
+    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return f"event: {event}\ndata: {data}\n\n"
 
 
 def _make_foarge_runner(job_id: str) -> Runner:
@@ -192,6 +266,8 @@ def _launch_jobs(
     if not cdk_status.get("ok"):
         raise HTTPException(403, str(cdk_status.get("message") or "CDK 不可用"))
     if cdk_status.get("kind") == "foarge":
+        if options.link_type != "upi":
+            raise HTTPException(400, "支付型 CDK 当前只用于 UPI 提链")
         available = foarge_cdks.status()["available_count"]
         if available < len(credentials):
             raise HTTPException(
@@ -260,6 +336,65 @@ def verify_cdk(body: CdkVerifyRequest) -> dict:
     return _public_cdk_status(cdks.verify(body.code))
 
 
+@app.get("/api/cdk")
+def compatibility_verify_cdk(
+    code: str = Query(default="", max_length=64),
+) -> dict:
+    """Compatibility endpoint used by turb-gpt-free-register."""
+
+    return _public_cdk_status(cdks.verify(code))
+
+
+@app.post("/api/extract", status_code=202)
+async def compatibility_create_job(
+    body: CompatibilityExtractRequest,
+) -> JSONResponse:
+    """Create an UPI job using the registration project's legacy request shape."""
+
+    link_type = body.link_type.strip().lower()
+    if link_type not in {"upi", "kakao"}:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "当前兼容接口仅支持 UPI 或 Kakao 提链"},
+        )
+    try:
+        credential = parse_credential(
+            body.token.get_secret_value(),
+            body.email,
+            require_email=link_type == "upi",
+        )
+    except CredentialError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    try:
+        snapshot = _launch_jobs(
+            [credential],
+            cdk=body.cdk,
+            options=_options(link_type),
+            owner_id=_compat_owner_id(body.cdk),
+        )[0]
+    except HTTPException as exc:
+        detail = (
+            exc.detail
+            if isinstance(exc.detail, str)
+            else json.dumps(exc.detail, ensure_ascii=False)
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": detail},
+            headers=exc.headers,
+        )
+    cdk_status = cdks.verify(body.cdk)
+    return JSONResponse(
+        status_code=202,
+        content={
+            "job_id": snapshot["id"],
+            "status": snapshot["status"],
+            "link_type": link_type,
+            "cdk_remaining": cdk_status.get("remaining_uses"),
+        },
+    )
+
+
 @app.get("/api/jobs")
 def list_jobs(request: Request, response: Response) -> dict:
     owner_id = _ensure_client_id(request, response)
@@ -274,6 +409,84 @@ def get_job(job_id: str, request: Request) -> dict:
     return job.snapshot()
 
 
+@app.get("/api/jobs/{job_id}/events")
+async def compatibility_job_events(
+    job_id: str,
+    request: Request,
+    cdk: str = Query(min_length=1, max_length=64),
+) -> StreamingResponse:
+    """Stream legacy log/result/error events for a compatibility job."""
+
+    job = jobs.get(job_id, owner_id=_compat_owner_id(cdk))
+    if job is None:
+        raise HTTPException(404, "任务不存在或 CDK 不匹配")
+
+    async def stream():
+        log_index = 0
+        heartbeat_ticks = 0
+        payment_status = ""
+        while True:
+            if await request.is_disconnected():
+                return
+            snapshot = job.snapshot()
+            logs = snapshot.get("logs") or []
+            for message in logs[log_index:]:
+                yield _sse_event("log", {"message": str(message)[:1000]})
+            log_index = len(logs)
+
+            payment = snapshot.get("payment") or {}
+            current_payment_status = str(payment.get("status") or "")
+            if current_payment_status and current_payment_status != payment_status:
+                payment_status = current_payment_status
+                message = str(
+                    payment.get("message") or f"支付状态：{current_payment_status}"
+                )
+                yield _sse_event("log", {"message": message[:1000]})
+
+            status = str(snapshot.get("status") or "")
+            if status == "success":
+                yield _sse_event(
+                    "result",
+                    {
+                        "result": _compat_result(
+                            snapshot,
+                            request=request,
+                            cdk=cdk,
+                        )
+                    },
+                )
+                yield _sse_event("done", {"status": status})
+                return
+            if status in {"failed", "cancelled"}:
+                result = snapshot.get("result") or {}
+                message = str(
+                    result.get("error")
+                    or (logs[-1] if logs else "")
+                    or ("任务已取消" if status == "cancelled" else "提链任务失败")
+                )
+                yield _sse_event(
+                    "error",
+                    {"error": message[:1000], "status": status},
+                )
+                yield _sse_event("done", {"status": status})
+                return
+
+            heartbeat_ticks += 1
+            if heartbeat_ticks >= 20:
+                heartbeat_ticks = 0
+                yield ": keepalive\n\n"
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.post("/api/jobs", status_code=202)
 async def create_job(
     body: CreateJobRequest,
@@ -283,14 +496,18 @@ async def create_job(
     if not body.authorized:
         raise HTTPException(400, "请确认该凭证属于你本人或已获得明确授权")
     try:
-        credential = parse_credential(body.credential.get_secret_value(), body.email)
+        credential = parse_credential(
+            body.credential.get_secret_value(),
+            body.email,
+            require_email=body.link_type == "upi",
+        )
     except CredentialError as exc:
         raise HTTPException(400, str(exc)) from exc
     owner_id = _ensure_client_id(request, response)
     return _launch_jobs(
         [credential],
         cdk=body.cdk,
-        options=_options(),
+        options=_options(body.link_type),
         owner_id=owner_id,
     )[0]
 
@@ -307,7 +524,11 @@ async def create_batch_jobs(
     seen_tokens: set[str] = set()
     for index_number, item in enumerate(body.items, start=1):
         try:
-            credential = parse_credential(item.credential.get_secret_value(), item.email)
+            credential = parse_credential(
+                item.credential.get_secret_value(),
+                item.email,
+                require_email=body.link_type == "upi",
+            )
         except CredentialError as exc:
             raise HTTPException(400, f"第 {index_number} 项：{exc}") from exc
         if credential.access_token in seen_tokens:
@@ -318,7 +539,7 @@ async def create_batch_jobs(
     snapshots = _launch_jobs(
         credentials,
         cdk=body.cdk,
-        options=_options(),
+        options=_options(body.link_type),
         owner_id=owner_id,
     )
     return {
@@ -337,8 +558,11 @@ def cancel_job(job_id: str, request: Request) -> dict:
 
 
 @app.get("/api/jobs/{job_id}/qr", include_in_schema=False)
-def get_qr(job_id: str, request: Request) -> FileResponse:
-    path = jobs.qr_path(job_id, owner_id=_existing_client_id(request))
+def get_qr(job_id: str, request: Request, access: str = "") -> FileResponse:
+    if access and hmac.compare_digest(access, _compat_qr_access(job_id)):
+        path = _compat_qr_path(job_id)
+    else:
+        path = jobs.qr_path(job_id, owner_id=_existing_client_id(request))
     if path is None:
         raise HTTPException(404, "二维码尚未生成")
     media_type = "image/svg+xml" if path.suffix.lower() == ".svg" else "image/png"
@@ -400,6 +624,7 @@ def admin_update_settings(body: AdminSettingsRequest, request: Request) -> dict:
     try:
         return settings.update(
             proxy_pool=body.proxy_pool,
+            kakao_proxy_pool=body.kakao_proxy_pool,
             login_proxy=body.login_proxy,
             approve_retries=body.approve_retries,
             approve_concurrency=body.approve_concurrency,

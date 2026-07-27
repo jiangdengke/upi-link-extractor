@@ -69,7 +69,12 @@ def _parse_json(raw: str) -> tuple[str, str]:
     return token, _find_email(value)
 
 
-def parse_credential(raw: str, email_hint: str = "") -> Credential:
+def parse_credential(
+    raw: str,
+    email_hint: str = "",
+    *,
+    require_email: bool = True,
+) -> Credential:
     """Parse a raw access token or a JSON object containing ``accessToken``.
 
     Session cookies are intentionally not exchanged here. The caller must
@@ -94,8 +99,10 @@ def parse_credential(raw: str, email_hint: str = "") -> Credential:
 
     jwt_email = _find_email(_decode_jwt_payload(token))
     email = str(email_hint or "").strip() or json_email or jwt_email
-    if not _EMAIL_RE.match(email):
+    if require_email and not _EMAIL_RE.match(email):
         raise CredentialError("无法从 Token 解析邮箱，请在“账号邮箱”中手动填写")
+    if email and not _EMAIL_RE.match(email):
+        raise CredentialError("账号邮箱格式无效")
 
     return Credential(access_token=token, email=email)
 
@@ -108,4 +115,3 @@ def redact_sensitive(text: str, *secrets: str) -> str:
     safe = re.sub(r"(?i)Bearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", safe)
     safe = _JWT_RE.sub("[REDACTED_JWT]", safe)
     return safe
-

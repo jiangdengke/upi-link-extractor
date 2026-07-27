@@ -46,6 +46,9 @@
         <form id="settings-form">
           <label for="settings-proxy-pool">India 代理池（每行一个）</label>
           <textarea id="settings-proxy-pool" rows="6" autocomplete="off" spellcheck="false" placeholder="http://user:pass@host:port"></textarea>
+          <label for="settings-kakao-proxy-pool">韩国 Kakao 代理 Seed（每行一个）</label>
+          <textarea id="settings-kakao-proxy-pool" rows="5" autocomplete="off" spellcheck="false" placeholder="http://user-region-KR-session-SESSION:pass@host:port"></textarea>
+          <p class="hint">带 country/region 选择器的 Seed 自动派生 KR → VN → KR；含 {SID} 的模板会为 KR 与 VN 物化独立 sticky session。</p>
           <div class="grid two">
             <div>
               <label for="settings-login-proxy">登录 / Checkout 代理（可选）</label>

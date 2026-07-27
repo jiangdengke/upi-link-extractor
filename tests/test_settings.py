@@ -10,15 +10,20 @@ def test_settings_persist_and_hide_proxy_details_from_public_status(tmp_path) ->
 
     saved = store.update(
         proxy_pool="http://one:pass@proxy.example:2000\nhttp://two:pass@proxy.example:2000",
+        kakao_proxy_pool="http://kakao-region-KR:pass@proxy.example:3000",
         login_proxy="http://login:pass@login.example:2000",
         approve_retries=40,
         approve_concurrency=5,
         proxy_from_step=3,
     )
     assert len(saved["proxy_pool"]) == 2
+    assert len(saved["kakao_proxy_pool"]) == 1
 
     restarted = SettingsStore(path)
     assert restarted.get()["approve_concurrency"] == 5
+    assert restarted.get()["kakao_proxy_pool"] == [
+        "http://kakao-region-KR:pass@proxy.example:3000"
+    ]
     public = restarted.public_status()
     assert public["proxy_count"] == 2
     assert "proxy_pool" not in public

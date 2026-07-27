@@ -19,7 +19,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--proxy-file", type=Path, help="India 代理池文件，每行一个")
     parser.add_argument("--login-proxy", default="", help="登录/Checkout 代理")
     parser.add_argument("--approve-retries", type=int, default=30)
-    parser.add_argument("--approve-concurrency", type=int, default=1)
+    parser.add_argument("--approve-concurrency", type=int, default=4)
     parser.add_argument("--proxy-from-step", type=int, default=3)
     parser.add_argument("--qr", type=Path, help="二维码输出路径")
     return parser
@@ -78,4 +78,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

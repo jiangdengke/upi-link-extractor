@@ -1,6 +1,6 @@
-# UPI Link Extractor
+# UPI / Kakao Link Extractor
 
-从 `any-auto-register` 中拆出的单用途 UPI 提链项目。它接收本人或已获授权账号的 ChatGPT Access Token，调用原项目的纯 HTTP UPI 核心，输出 Stripe UPI 支付长链和二维码。
+接收 ChatGPT Access Token，通过纯 HTTP 流程输出 Stripe UPI 支付长链与二维码，或韩国 Kakao Pay / Nicepay 跳转链接。
 
 ## 功能
 
@@ -8,7 +8,9 @@
 - 自动从 JWT/JSON 解析账号邮箱，也允许手工填写
 - 后台任务、状态轮询、日志和取消
 - Stripe UPI 支付链接和二维码展示
+- 韩国 Kakao Pay / Nicepay 跳转链接提取
 - 可选登录代理、India 代理池和 Approve 参数
+- 独立的韩国 Kakao sticky 代理 Seed 池，不会覆盖 UPI 代理
 - Web 页面与命令行两种入口
 - Token 不写数据库、不进入任务响应、不保存到浏览器存储
 - 管理员密码登录和 CDK 兑换码管理
@@ -26,7 +28,7 @@
 - 当前版本不接收或交换 Session Cookie；请提供 Access Token。
 - 默认仅监听 `127.0.0.1`。不要直接暴露到公网，因为接口接收高敏感凭证。
 - 运行依赖 ChatGPT/Stripe 的非公开页面接口，第三方改版后可能失效。
-- 代理不是必需项；请只使用你有权使用的代理服务。
+- UPI 可按部署环境直连；Kakao 模式需要在管理端配置韩国代理 Seed。
 - Access Token 不会持久化。使用支付型 CDK 时，服务会按 Foarge Publisher API
   的要求把 Access Token 与 UPI 长链发送至 `https://foarge.com/api/publisher/v1`
   用于支付和 Plus 验单。
@@ -47,7 +49,19 @@ Windows 也可以在依赖安装完成后双击 `start.bat`。
 
 管理员页面：<http://127.0.0.1:15336/admin>
 
-代理池和提链运行参数只在管理端配置。用户页面和公开任务 API 无法读取或覆盖代理凭证。
+UPI 与 Kakao 代理池及提链运行参数只在管理端配置。用户页面和公开任务 API 无法读取或覆盖代理凭证。
+
+### 韩国 Kakao 提链
+
+在管理页“韩国 Kakao 代理 Seed”中每行保存一个 sticky 代理。带
+`country`/`region` 选择器的 Seed 会自动派生
+`KR checkout → VN promotion → KR Stripe/Kakao` 链路。含 `{SID}` 的模板会让
+checkout/provider 共用一个韩国 sticky session，并为 VN promotion 物化独立 session，
+避免代理把跨地区请求锁在首个出口；普通韩国代理会在三个阶段复用原地址。任务执行前
+会验证各阶段出口国家。
+
+用户页选择“韩国 Kakao Pay”后提交 Access Token。成功结果是 Nicepay/Kakao 的
+HTTPS 跳转链接，不生成 UPI 二维码；该模式不使用 Foarge 支付型 CDK。
 
 ### Foarge 支付型 CDK
 
@@ -85,6 +99,8 @@ nano .env
 
 如果通过 HTTPS 域名访问，把 `.env` 中的 `UPI_COOKIE_SECURE` 改为 `1`。
 如果只允许服务器本机或反向代理访问，把 `UPI_BIND_HOST` 改为 `127.0.0.1`。
+宿主机 Nginx 反代到 Docker 映射端口时，再把 `UPI_FORWARDED_ALLOW_IPS` 改为 `*`，
+使 Uvicorn 接受 Docker 网关转发的协议头，并生成正确的 HTTPS 二维码 URL。
 
 使用预构建的 GHCR 镜像：
 
@@ -129,8 +145,8 @@ python -m upi_link.cli --credential-file "credential.json" --proxy-file "proxies
 
 ## API
 
-- `POST /api/jobs`：创建提链任务
-- `POST /api/jobs/batch`：批量创建任务，最多 10 项
+- `POST /api/jobs`：创建提链任务，`link_type` 可为 `upi` 或 `kakao`
+- `POST /api/jobs/batch`：批量创建任务，最多 10 项，支持同样的 `link_type`
 - `GET /api/jobs`：列出本次服务进程中的任务
 - `GET /api/jobs/{id}`：查询状态
 - `POST /api/jobs/{id}/cancel`：取消任务
@@ -142,6 +158,28 @@ python -m upi_link.cli --credential-file "credential.json" --proxy-file "proxies
 - `GET /api/admin/foarge`：读取脱敏的 Foarge 配置状态
 - `PUT /api/admin/foarge`：保存或清除 Foarge PBK
 - `POST /api/admin/foarge/check`：检查 Foarge PBK 状态
+
+### 对接 Turb GPT Free Register
+
+本项目提供了与 `turb-gpt-free-register/core/extract_link_service.py` 当前协议兼容的接口：
+
+- `GET /api/cdk?code=...`：查询 CDK 状态
+- `POST /api/extract`：按 `{token, link_type, cdk}` 创建任务
+- `GET /api/jobs/{id}/events?cdk=...`：通过 SSE 返回日志和提链结果
+
+先启动本服务并在管理页面生成“仅提链”CDK，然后在注册项目的 `.env` 中配置：
+
+```dotenv
+EXTRACT_LINK_API_BASE=http://127.0.0.1:15336
+EXTRACT_LINK_CDK=UPI-XXXX-XXXX-XXXX
+EXTRACT_LINK_TYPE=upi
+```
+
+注册项目现有的单账号、批量提链、状态保存和 WebUI 展示逻辑可以保持不变。兼容接口
+接受 `upi` 和 `kakao` 类型；任务通过 CDK 隔离，UPI 结果中的二维码使用仅限对应任务的签名 URL，
+不会把 CDK 放入图片地址。部署时应设置稳定的 `UPI_SESSION_SECRET`，确保服务重启后
+已签发的二维码 URL 仍可验证。`EXTRACT_LINK_API_BASE` 所使用的地址也需要能从 WebUI
+所在浏览器访问，否则页面只能保存支付长链，不能直接加载二维码图片。
 
 批量任务请求示例。建议把内容保存为仅当前用户可读的 JSON 文件，避免 Token 进入 Shell 历史：
 

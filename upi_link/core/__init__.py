@@ -7,6 +7,13 @@ in here.
 """
 from __future__ import annotations
 
+from .kakao_runner import KakaoError, run_kakao_link
 from .upi_runner import UpiQrError, UpiQrResult, run_upi_qr_probe
 
-__all__ = ["run_upi_qr_probe", "UpiQrResult", "UpiQrError"]
+__all__ = [
+    "KakaoError",
+    "run_kakao_link",
+    "run_upi_qr_probe",
+    "UpiQrResult",
+    "UpiQrError",
+]

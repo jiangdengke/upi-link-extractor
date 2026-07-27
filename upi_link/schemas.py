@@ -11,7 +11,19 @@ class CreateJobRequest(BaseModel):
     cdk: str = Field(min_length=1, max_length=64)
     credential: SecretStr
     email: str = Field(default="", max_length=320)
+    link_type: Literal["upi", "kakao"] = "upi"
     authorized: bool = False
+
+
+class CompatibilityExtractRequest(BaseModel):
+    """Request shape used by the registration project's extract-link client."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    cdk: str = Field(min_length=1, max_length=64)
+    token: SecretStr
+    link_type: str = Field(default="upi", min_length=1, max_length=8)
+    email: str = Field(default="", max_length=320)
 
 
 class BatchCredentialItem(BaseModel):
@@ -24,6 +36,7 @@ class CreateBatchJobRequest(BaseModel):
 
     cdk: str = Field(min_length=1, max_length=64)
     items: list[BatchCredentialItem] = Field(min_length=1, max_length=10)
+    link_type: Literal["upi", "kakao"] = "upi"
     authorized: bool = False
 
 
@@ -50,9 +63,10 @@ class CdkRevokeRequest(BaseModel):
 
 class AdminSettingsRequest(BaseModel):
     proxy_pool: str = Field(default="", max_length=20000)
+    kakao_proxy_pool: str = Field(default="", max_length=20000)
     login_proxy: str = Field(default="", max_length=2048)
     approve_retries: int = Field(default=30, ge=1, le=60)
-    approve_concurrency: int = Field(default=1, ge=1, le=20)
+    approve_concurrency: int = Field(default=4, ge=1, le=20)
     proxy_from_step: int = Field(default=3, ge=1, le=6)
 
 

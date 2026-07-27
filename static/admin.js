@@ -124,11 +124,12 @@ async function loadCdks() {
 async function loadSettings() {
   const data = await request("/api/admin/settings", { cache: "no-store" });
   document.querySelector("#settings-proxy-pool").value = (data.proxy_pool || []).join("\n");
+  document.querySelector("#settings-kakao-proxy-pool").value = (data.kakao_proxy_pool || []).join("\n");
   document.querySelector("#settings-login-proxy").value = data.login_proxy || "";
   document.querySelector("#settings-retries").value = data.approve_retries;
   document.querySelector("#settings-concurrency").value = data.approve_concurrency;
   document.querySelector("#settings-proxy-step").value = data.proxy_from_step;
-  settingsSummary.textContent = `代理 ${data.proxy_pool.length} · 并发 ${data.approve_concurrency}`;
+  settingsSummary.textContent = `UPI ${data.proxy_pool.length} · Kakao ${data.kakao_proxy_pool.length} · 并发 ${data.approve_concurrency}`;
   settingsSummary.classList.add("ok");
 }
 
@@ -247,6 +248,7 @@ settingsForm.addEventListener("submit", async (event) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         proxy_pool: document.querySelector("#settings-proxy-pool").value,
+        kakao_proxy_pool: document.querySelector("#settings-kakao-proxy-pool").value,
         login_proxy: document.querySelector("#settings-login-proxy").value,
         approve_retries: Number(document.querySelector("#settings-retries").value),
         approve_concurrency: Number(document.querySelector("#settings-concurrency").value),
@@ -254,7 +256,7 @@ settingsForm.addEventListener("submit", async (event) => {
       }),
     });
     settingsMessage.textContent = "全局配置已保存";
-    settingsSummary.textContent = `代理 ${data.proxy_pool.length} · 并发 ${data.approve_concurrency}`;
+    settingsSummary.textContent = `UPI ${data.proxy_pool.length} · Kakao ${data.kakao_proxy_pool.length} · 并发 ${data.approve_concurrency}`;
     showToast("代理配置已保存");
   } catch (error) {
     settingsMessage.textContent = error.message || String(error);

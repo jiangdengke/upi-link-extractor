@@ -24,7 +24,7 @@ def test_health_and_index() -> None:
 
     index = client.get("/")
     assert index.status_code == 200
-    assert "UPI 提链工具" in index.text
+    assert "UPI / Kakao 提链工具" in index.text
     assert client.get("/docs").status_code == 404
     assert client.get("/redoc").status_code == 404
     assert client.get("/openapi.json").status_code == 404

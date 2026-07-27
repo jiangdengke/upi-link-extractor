@@ -10,7 +10,10 @@ WORKDIR /app
 RUN groupadd --system app && useradd --system --gid app --home-dir /app app
 
 COPY requirements.txt ./
-RUN python -m pip install --no-cache-dir -r requirements.txt
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip install --no-cache-dir -r requirements.txt
 
 COPY main.py README.md LICENSE NOTICE ./
 COPY upi_link ./upi_link

@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="robots" content="noindex,nofollow" />
-    <title>UPI 提链工具</title>
+    <title>UPI / Kakao 提链工具</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
@@ -12,8 +12,8 @@
       <header class="hero">
         <div>
           <p class="eyebrow">ACCESS TOKEN NOT PERSISTED</p>
-          <h1>UPI 提链工具</h1>
-          <p class="subtitle">从已授权 ChatGPT 账号的 Access Token 创建 Stripe UPI 支付长链与二维码。</p>
+          <h1>UPI / Kakao 提链工具</h1>
+          <p class="subtitle">从 Access Token 创建 Stripe UPI 长链与二维码，或韩国 Kakao Pay / Nicepay 跳转链接。</p>
         </div>
         <div id="health" class="health">服务检测中…</div>
       </header>
@@ -29,6 +29,12 @@
             <p id="cdk-status" class="hint">请先输入有效的 CDK。</p>
           </div>
 
+          <label for="link-type">提链类型</label>
+          <select id="link-type" name="link_type">
+            <option value="upi">印度 UPI（长链 + 二维码）</option>
+            <option value="kakao">韩国 Kakao Pay（Nicepay 跳转链接）</option>
+          </select>
+
           <label for="credential">Access Token / Session JSON</label>
           <textarea
             id="credential"
@@ -43,7 +49,7 @@
           <p class="hint">凭证不会持久化；支付型 CDK 会将 Access Token 与支付长链提交至支付服务用于验单。Session Cookie 不受支持。</p>
 
           <label for="email">账号邮箱</label>
-          <input id="email" name="email" type="email" autocomplete="off" placeholder="Token 无法解析邮箱时必填" />
+          <input id="email" name="email" type="email" autocomplete="off" placeholder="UPI 模式下 Token 无邮箱时必填" />
 
           <label class="authorization">
             <input id="authorized" name="authorized" type="checkbox" required />

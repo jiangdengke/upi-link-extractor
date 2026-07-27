@@ -25,6 +25,7 @@ def _now() -> str:
 class Job:
     id: str
     email: str
+    link_type: str = "upi"
     owner_id: str = field(default="", repr=False)
     status: str = "queued"
     created_at: str = field(default_factory=_now)
@@ -45,6 +46,7 @@ class Job:
         return {
             "id": self.id,
             "email": self.email,
+            "link_type": self.link_type,
             "status": self.status,
             "created_at": self.created_at,
             "started_at": self.started_at,
@@ -85,6 +87,7 @@ class JobManager:
         job = Job(
             id=job_id or uuid4().hex,
             email=credential.email,
+            link_type=options.link_type,
             owner_id=owner_id,
             on_complete=on_complete,
         )

@@ -43,7 +43,16 @@ def test_proxy_configuration_is_admin_only() -> None:
     assert 'id="login-proxy"' not in index
     assert "proxy_pool: data.get" not in app_js
     assert 'id="settings-proxy-pool"' in admin
+    assert 'id="settings-kakao-proxy-pool"' in admin
     assert "/api/admin/settings" in admin_js
+
+
+def test_kakao_mode_is_available_on_user_page() -> None:
+    index = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    app_js = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    assert 'value="kakao"' in index
+    assert "Kakao Pay / Nicepay 跳转链接" in app_js
+    assert "link_type: data.get" in app_js
 
 
 def test_user_page_contains_no_admin_entry_or_admin_copy() -> None:
